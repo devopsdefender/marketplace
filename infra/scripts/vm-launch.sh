@@ -10,6 +10,7 @@ CPUS="2"
 PORT_FORWARDS=()
 VFIO_DEVICE=""
 TDX="false"
+SEALED="true"
 VM_DIR="/var/lib/devopsdefender/vms"
 CONFIG_MODE="agent"
 LIBVIRT_NETWORK="${LIBVIRT_NETWORK:-default}"
@@ -26,6 +27,7 @@ Usage: $0 [options]
   --port-forward H:G    Recorded for metadata only in libvirt mode
   --vfio-device ADDR    PCI device to pass through via VFIO (e.g. 0d:00.0)
   --tdx                 Request Intel TDX launch settings
+  --no-seal             Keep SSH enabled (staging/debug only)
 EOF
   exit 1
 }
@@ -117,6 +119,7 @@ while [[ $# -gt 0 ]]; do
     --port-forward) PORT_FORWARDS+=("$2"); shift 2 ;;
     --vfio-device) VFIO_DEVICE="$2"; shift 2 ;;
     --tdx) TDX="true"; shift ;;
+    --no-seal) SEALED="false"; shift ;;
     --help|-h) usage ;;
     *) echo "Unknown option: $1" >&2; usage ;;
   esac
@@ -160,11 +163,23 @@ echo "==> Injecting config into overlay via virt-customize"
 
 # Build a firstboot script that enables the right service.
 FIRSTBOOT="${VM_WORK_DIR}/firstboot.sh"
+SEAL_COMMANDS=""
+if [ "$SEALED" = "true" ]; then
+  SEAL_COMMANDS=$(cat <<'SEALCMDS'
+# Seal VM — no SSH access
+systemctl disable --now ssh.service ssh.socket sshd.service 2>/dev/null || true
+systemctl mask ssh.service ssh.socket sshd.service 2>/dev/null || true
+rm -f /etc/ssh/ssh_host_*
+SEALCMDS
+  )
+fi
+
 cat > "$FIRSTBOOT" <<FBSCRIPT
 #!/bin/bash
 systemctl daemon-reload
 systemctl disable --now ${SYSTEMD_DISABLE} 2>/dev/null || true
 systemctl enable --now ${SYSTEMD_ENABLE}
+${SEAL_COMMANDS}
 FBSCRIPT
 
 # Write a netplan config for DHCP on the virtio NIC.
@@ -194,10 +209,23 @@ cat > "${CIDATA_DIR}/meta-data" <<METADATA
 instance-id: ${INSTANCE_ID}
 local-hostname: ${VM_NAME}
 METADATA
-cat > "${CIDATA_DIR}/user-data" <<USERDATA
+if [ "$SEALED" = "true" ]; then
+  cat > "${CIDATA_DIR}/user-data" <<USERDATA
+#cloud-config
+ssh_pwauth: false
+disable_root: true
+users: []
+runcmd:
+  - systemctl disable --now ssh.service ssh.socket sshd.service 2>/dev/null || true
+  - systemctl mask ssh.service ssh.socket sshd.service 2>/dev/null || true
+  - rm -f /etc/ssh/ssh_host_*
+USERDATA
+else
+  cat > "${CIDATA_DIR}/user-data" <<USERDATA
 #cloud-config
 {}
 USERDATA
+fi
 
 CIDATA_ISO="${VM_WORK_DIR}/cidata.iso"
 if command -v cloud-localds >/dev/null 2>&1; then
@@ -316,7 +344,7 @@ echo "    Memory: ${MEMORY}, CPUs: ${CPUS}"
 echo "    Overlay: ${OVERLAY}"
 echo "    Config mode: ${CONFIG_MODE}"
 echo "    Libvirt network: ${LIBVIRT_NETWORK}"
-echo "    TDX: ${TDX}"
+echo "    TDX: ${TDX}, Sealed: ${SEALED}"
 if [ -n "$VFIO_DEVICE" ]; then
   echo "    VFIO device: ${VFIO_DEVICE}"
 fi
@@ -339,6 +367,7 @@ cat > "${VM_WORK_DIR}/vm-info.json" <<INFO
   "port_forwards": "$(IFS=,; echo "${PORT_FORWARDS[*]+"${PORT_FORWARDS[*]}"}")",
   "vfio_device": "${VFIO_DEVICE}",
   "tdx": ${TDX},
+  "sealed": ${SEALED},
   "xml_path": "${DOMAIN_XML}",
   "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }

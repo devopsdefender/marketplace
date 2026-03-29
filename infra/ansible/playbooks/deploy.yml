@@ -270,6 +270,11 @@
         agent_launch_args: "{{ agent_launch_args + ['--vfio-device', vfio_device] }}"
       when: vfio_device | length > 0
 
+    - name: Unseal VM for staging (allow SSH)
+      ansible.builtin.set_fact:
+        agent_launch_args: "{{ agent_launch_args + ['--no-seal'] }}"
+      when: dd_env == 'staging'
+
     - name: Launch agent VM
       ansible.builtin.command:
         argv: "{{ agent_launch_args }}"

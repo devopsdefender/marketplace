@@ -125,8 +125,14 @@ systemctl enable docker
 systemctl enable devopsdefender-agent.service
 systemctl disable devopsdefender-control-plane.service || true
 
+# ── Remove packer build user and lock root ────────────────────────────────
+userdel -r packer 2>/dev/null || true
+passwd -l root 2>/dev/null || true
+
 # ── Aggressive cleanup (keep the image small) ────────────────────────────
 # Remove packages only needed for repo setup, then ensure cloud-init survives
+# SSH is left installed but sealing (disable/mask) happens at VM launch time
+# via --no-seal (staging) or default sealed mode (production)
 apt-get purge -y gnupg lsb-release
 apt-get autoremove -y
 if ! command -v cloud-init >/dev/null 2>&1; then
