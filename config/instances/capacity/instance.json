@@ -1,0 +1,6 @@
+{
+  "app_name": "marketplace-capacity",
+  "image": "ghcr.io/openclaw/openclaw:latest",
+  "ports": ["8081:3000"],
+  "description": "Manages confidential VMs and BTC payments for compute rentals"
+}

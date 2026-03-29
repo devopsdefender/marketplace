@@ -110,34 +110,74 @@ jobs:
             exit 1
           fi
 
-      - name: Deploy OpenClaw marketplace
+      - name: Build instance registry
+        id: registry
+        run: |
+          # Serialize every config/instances/*/ into a JSON array
+          INSTANCE_REGISTRY=$(
+            for dir in config/instances/*/; do
+              [ -f "${dir}/instance.json" ] || continue
+
+              INSTANCE=$(cat "${dir}/instance.json")
+
+              ENV_VARS="[]"
+              if [ -f "${dir}/defaults.env" ]; then
+                ENV_VARS=$(grep -v '^#' "${dir}/defaults.env" | grep -v '^$' | jq -R . | jq -s .)
+              fi
+
+              SKILLS="[]"
+              if [ -d "${dir}/skills" ]; then
+                SKILLS=$(find "${dir}/skills" -name '*.md' -type f | sort | while read -r f; do
+                  name="$(basename "$f" .md)"
+                  content="$(cat "$f")"
+                  jq -cn --arg name "$name" --arg content "$content" '{name: $name, content: $content}'
+                done | jq -s .)
+              fi
+
+              echo "$INSTANCE" | jq -c --argjson env "$ENV_VARS" --argjson skills "$SKILLS" \
+                '. + {env: $env, skills: $skills}'
+            done | jq -s .
+          )
+          echo "Instance registry: $(echo "$INSTANCE_REGISTRY" | jq '[.[].app_name]')"
+
+          # Save for the next step (use a temp file to avoid shell escaping issues)
+          echo "$INSTANCE_REGISTRY" > /tmp/instance-registry.json
+
+      - name: Deploy orchestrator
         run: |
           CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
 
-          ENV_VARS=$(cat config/defaults.env | grep -v '^#' | grep -v '^$' | jq -R . | jq -s .)
+          # Orchestrator env — inject DD_CONTROL_PLANE_URL so it can deploy sub-instances
+          ORCH_ENV=$(grep -v '^#' config/orchestrator/defaults.env | grep -v '^$' | jq -R . | jq -s .)
+          ORCH_ENV=$(echo "$ORCH_ENV" | jq --arg cp "$CP_URL" '. + ["DD_CONTROL_PLANE_URL=" + $cp]')
 
-          # Collect skills from config/skills/ so OpenClaw knows its capabilities
-          SKILLS=$(find config/skills -name '*.md' -type f | sort | while read -r f; do
+          # Orchestrator skills from config/orchestrator/skills/
+          ORCH_SKILLS=$(find config/orchestrator/skills -name '*.md' -type f | sort | while read -r f; do
             name="$(basename "$f" .md)"
             content="$(cat "$f")"
             jq -cn --arg name "$name" --arg content "$content" '{name: $name, content: $content}'
           done | jq -s .)
 
+          # Append the instance-registry as a synthetic skill
+          REGISTRY_CONTENT=$(cat /tmp/instance-registry.json)
+          ORCH_SKILLS=$(echo "$ORCH_SKILLS" | jq --arg content "$REGISTRY_CONTENT" \
+            '. + [{name: "instance-registry", content: $content}]')
+
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${CP_URL}/api/v1/deploy" \
             -H "Content-Type: application/json" \
             -d "$(jq -cn \
               --arg image "ghcr.io/openclaw/openclaw:latest" \
-              --arg name "marketplace" \
+              --arg name "marketplace-orchestrator" \
               --arg version "${{ github.sha }}" \
-              --argjson env "$ENV_VARS" \
-              --argjson skills "$SKILLS" \
+              --argjson env "$ORCH_ENV" \
+              --argjson skills "$ORCH_SKILLS" \
               '{image: $image, app_name: $name, app_version: $version, env: $env, skills: $skills, ports: ["8080:3000"]}')")
 
           HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
           BODY=$(echo "${RESPONSE}" | sed '$d')
           echo "HTTP ${HTTP_CODE}: ${BODY}"
           if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 300 ]; then
-            echo "::error::Deploy failed: ${BODY}"
+            echo "::error::Orchestrator deploy failed: ${BODY}"
             exit 1
           fi
-          echo "Marketplace deployed. OpenClaw Gateway running on DD TDX agent."
+          echo "Orchestrator deployed. It will now deploy sub-instances: $(cat /tmp/instance-registry.json | jq -r '[.[].app_name] | join(", ")')"

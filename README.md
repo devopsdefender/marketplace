@@ -6,18 +6,17 @@ This repo is also the reference example for building apps on DD + OpenClaw.
 
 ## How it works
 
-1. **DD deploys OpenClaw** — the marketplace orchestrator runs inside a TDX enclave
-2. **OpenClaw manages capacity** — uses skills (markdown) to provision and manage confidential VMs
+1. **DD deploys the orchestrator** — an OpenClaw instance that manages all other instances
+2. **Orchestrator deploys specialized instances** — capacity manager, coding environment, etc.
 3. **Customers pay with BTC** — wallet integration inside the enclave (keys never leave hardware)
 4. **Nodes register with DD** — each provisioned VM becomes a DD agent with attestation
 
 ```
-Customer ──BTC──> Marketplace (OpenClaw on TDX)
-                       │
-                       ├── Launch confidential VM on local GPU host
-                       ├── Agent registers with DD control plane
-                       ├── Customer deploys workload to their enclave
-                       └── Teardown on rental expiry
+CI (GitHub Actions)
+  └── deploys Orchestrator OpenClaw (port 8080)
+        ├── deploys Capacity OpenClaw (port 8081) — VM management + BTC payments
+        ├── deploys Coding OpenClaw (port 8082) — Claude coding in TDX enclave
+        └── deploys ... (future instances)
 ```
 
 ## Quick start
@@ -32,33 +31,51 @@ Customer ──BTC──> Marketplace (OpenClaw on TDX)
 
 ### 3. Open a PR
 
-Triggers the deploy: provisions a DD agent VM, deploys OpenClaw with marketplace skills.
+Triggers the deploy: provisions a DD agent VM, deploys the orchestrator, which then deploys all configured instances.
 
 ### 4. Connect
 
 Your marketplace is live at the Cloudflare tunnel URL assigned by DD.
 
-## Skills
+## Adding a new instance
 
-Skills are markdown files in `config/skills/` that define what OpenClaw can do:
+Create a directory under `config/instances/` with:
 
-- **`capacity.md`** — Manage compute nodes (launch, stop, monitor VMs)
-- **`payments.md`** — BTC payment processing for capacity rentals
+```
+config/instances/my-instance/
+├── instance.json     # app_name, image, ports, description
+├── defaults.env      # environment variables
+└── skills/           # optional — markdown skill files
+    └── my-skill.md
+```
 
-To add a new skill, create a markdown file describing the capability. OpenClaw loads it automatically.
+The orchestrator picks it up automatically on the next deploy. No other changes needed.
 
-## Building your own DD + OpenClaw app
+## Project structure
 
-This repo shows the pattern:
-
-1. Write your skills as markdown in `config/skills/`
-2. Set `config/defaults.env` for OpenClaw bootstrap
-3. The deploy workflow handles everything: VM provisioning, agent registration, OpenClaw deployment
-4. Fork, customize skills, push — you have your own DD-powered app
+```
+config/
+├── orchestrator/           # Orchestrator OpenClaw config
+│   ├── defaults.env
+│   └── skills/
+│       └── manage-instances.md
+└── instances/              # One directory per specialized instance
+    ├── capacity/           # VM management + BTC payments
+    │   ├── instance.json
+    │   ├── defaults.env
+    │   └── skills/
+    └── coding/             # Claude coding environment
+        ├── instance.json
+        └── defaults.env
+infra/                      # Infrastructure as Code
+├── ansible/                # Playbooks for baremetal provisioning
+├── packer/                 # VM image building
+└── scripts/                # VM lifecycle (launch, stop, status)
+```
 
 ## Architecture
 
 - **DD Control Plane** — GCP, manages agent registration and Cloudflare tunnels
-- **DD Agent** — OVH baremetal, runs the OpenClaw container via libvirt/KVM
-- **OpenClaw** — AI orchestrator inside TDX enclave, executes skills
-- **Capacity** — Local confidential VMs launched by OpenClaw on demand
+- **DD Agent** — OVH baremetal, runs OpenClaw containers via libvirt/KVM
+- **Orchestrator OpenClaw** — manages instance lifecycle via the DD deploy API
+- **Specialized instances** — each runs inside a TDX enclave with its own skills
