@@ -114,7 +114,7 @@ jobs:
               --arg name "marketplace" \
               --arg version "${{ github.sha }}" \
               --argjson env "$ENV_VARS" \
-              '{image: $image, app_name: $name, app_version: $version, env: $env, ports: ["3000:3000"]}')")
+              '{image: $image, app_name: $name, app_version: $version, env: $env, ports: ["8080:3000"]}')")
 
           HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
           BODY=$(echo "${RESPONSE}" | sed '$d')
