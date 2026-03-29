@@ -1,23 +1,40 @@
 # DD Marketplace
 
-A compute marketplace built on [DevOps Defender](https://devopsdefender.com) + [OpenClaw](https://openclaw.ai). Rent TDX-verified enclave capacity, pay with BTC.
-
-This repo is also the reference example for building apps on DD + OpenClaw.
+A compute marketplace built on [DevOps Defender](https://devopsdefender.com). Rent TDX-verified enclave capacity, pay with BTC.
 
 ## How it works
 
-1. **DD deploys the orchestrator** — an OpenClaw instance that manages all other instances
-2. **Orchestrator deploys specialized instances** — capacity manager, coding environment, etc.
-3. **Customers pay with BTC** — wallet integration inside the enclave (keys never leave hardware)
-4. **Nodes register with DD** — each provisioned VM becomes a DD agent with attestation
+1. **DD provisions a baremetal agent** — KVM/libvirt VM on OVH with TDX attestation
+2. **CI deploys the capacity service** — a Flask API for managing rentals
+3. **Customers request capacity** — choose node type, get a BTC invoice
+4. **Payment triggers provisioning** — workload deployed to the DD agent automatically
 
 ```
 CI (GitHub Actions)
-  └── deploys Orchestrator OpenClaw (port 8080)
-        ├── deploys Capacity OpenClaw (port 8081) — VM management + BTC payments
-        ├── deploys Coding OpenClaw (port 8082) — Claude coding in TDX enclave
-        └── deploys ... (future instances)
+  ├── deploy-vm: provisions DD agent on baremetal
+  ├── build-service: builds capacity service container
+  └── deploy-marketplace: deploys container via DD deploy API
+
+Customer → POST /api/rentals → BTC invoice → payment → workload provisioned
 ```
+
+## API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/capacity` | Node types and pricing |
+| `POST` | `/api/rentals` | Create rental: `{node_type, hours}` |
+| `GET` | `/api/rentals/<id>` | Rental status |
+| `GET` | `/api/invoices/<id>` | Invoice status |
+| `POST` | `/api/invoices/<id>/simulate-payment` | Dev: simulate BTC payment |
+| `GET` | `/health` | Health check |
+
+## Pricing
+
+| Node Type | Specs | BTC/hour |
+|-----------|-------|----------|
+| Standard | 8 vCPU, 16GB RAM | 0.001 |
+| GPU (H100) | 16 vCPU, 64GB RAM, NVIDIA H100 | 0.01 |
 
 ## Quick start
 
@@ -31,44 +48,31 @@ CI (GitHub Actions)
 
 ### 3. Open a PR
 
-Triggers the deploy: provisions a DD agent VM, deploys the orchestrator, which then deploys all configured instances.
+Triggers the deploy: provisions a DD agent VM, builds the capacity service container, deploys it.
 
-### 4. Connect
+### Local development
 
-Your marketplace is live at the Cloudflare tunnel URL assigned by DD.
-
-## Adding a new instance
-
-Create a directory under `config/instances/` with:
-
+```bash
+cd service
+pip install -r requirements.txt
+DD_CONTROL_PLANE_URL=http://localhost:9999 DATABASE_PATH=/tmp/capacity.db python app.py
 ```
-config/instances/my-instance/
-├── instance.json     # app_name, image, ports, description
-├── defaults.env      # environment variables
-└── skills/           # optional — markdown skill files
-    └── my-skill.md
-```
-
-The orchestrator picks it up automatically on the next deploy. No other changes needed.
 
 ## Project structure
 
 ```
-config/
-├── orchestrator/           # Orchestrator OpenClaw config
-│   ├── defaults.env
-│   └── skills/
-│       └── manage-instances.md
-└── instances/              # One directory per specialized instance
-    ├── capacity/           # VM management + BTC payments
-    │   ├── instance.json
-    │   ├── defaults.env
-    │   └── skills/
-    └── coding/             # Claude coding environment
-        ├── instance.json
-        └── defaults.env
+service/                    # Capacity management service (Flask)
+├── app.py                  # Entry point
+├── config.py               # Node types, pricing
+├── models.py               # DB models (Invoice, Rental)
+├── routes.py               # HTTP API
+├── payments.py             # BTC payment stub
+├── provisioner.py          # DD deploy API client
+├── scheduler.py            # Background tasks
+├── Dockerfile
+└── requirements.txt
 infra/                      # Infrastructure as Code
-├── ansible/                # Playbooks for baremetal provisioning
+├── ansible/                # Baremetal provisioning
 ├── packer/                 # VM image building
 └── scripts/                # VM lifecycle (launch, stop, status)
 ```
@@ -76,6 +80,5 @@ infra/                      # Infrastructure as Code
 ## Architecture
 
 - **DD Control Plane** — GCP, manages agent registration and Cloudflare tunnels
-- **DD Agent** — OVH baremetal, runs OpenClaw containers via libvirt/KVM
-- **Orchestrator OpenClaw** — manages instance lifecycle via the DD deploy API
-- **Specialized instances** — each runs inside a TDX enclave with its own skills
+- **DD Agent** — OVH baremetal, runs containers via libvirt/KVM
+- **Capacity Service** — Flask API managing rentals, payments, and provisioning

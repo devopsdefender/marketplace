@@ -1,6 +1,0 @@
-{
-  "app_name": "marketplace-coding",
-  "image": "ghcr.io/openclaw/openclaw:latest",
-  "ports": ["8082:3000"],
-  "description": "Claude-powered coding environment running inside a TDX enclave"
-}
