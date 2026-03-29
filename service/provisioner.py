@@ -1,13 +1,40 @@
+import logging
+
 import requests
 
-from config import DD_CONTROL_PLANE_URL
+from config import DD_CONTROL_PLANE_URL, REQUIRE_ATTESTATION
+
+log = logging.getLogger(__name__)
+
+
+def verify_agent_attestation(agent_id):
+    """Check if an agent has valid TDX attestation via the control plane."""
+    try:
+        resp = requests.get(
+            f"{DD_CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/attestation",
+            timeout=10,
+        )
+        if resp.status_code == 404:
+            return False
+        resp.raise_for_status()
+        return resp.json().get("status") == "verified"
+    except Exception:
+        log.exception("Attestation check failed for agent %s", agent_id)
+        return False
 
 
 def get_ready_agents():
-    """List agents registered with the DD control plane."""
+    """List agents registered with the DD control plane.
+
+    When REQUIRE_ATTESTATION is enabled, only returns agents with
+    verified TDX attestation.
+    """
     resp = requests.get(f"{DD_CONTROL_PLANE_URL}/api/v1/agents", timeout=10)
     resp.raise_for_status()
-    return [a for a in resp.json() if a.get("registration_state") == "ready"]
+    agents = [a for a in resp.json() if a.get("registration_state") == "ready"]
+    if REQUIRE_ATTESTATION:
+        agents = [a for a in agents if verify_agent_attestation(a.get("id"))]
+    return agents
 
 
 def deploy_workload(app_name, image, ports=None, env=None):

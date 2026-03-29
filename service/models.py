@@ -27,6 +27,7 @@ class Rental(db.Model):
     invoice_id = db.Column(db.Integer, db.ForeignKey("invoices.id"), nullable=False)
     node_type = db.Column(db.String(32), nullable=False)
     app_name = db.Column(db.String(128), nullable=True)
+    attestation_status = db.Column(db.String(24), nullable=True)
     started_at = db.Column(db.DateTime, nullable=True)
     expires_at = db.Column(db.DateTime, nullable=True)
     status = db.Column(db.String(24), nullable=False, default="awaiting_payment")

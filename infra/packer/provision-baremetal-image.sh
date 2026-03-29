@@ -73,6 +73,29 @@ apt-get update
 apt-get install -y --no-install-recommends nvidia-container-toolkit
 nvidia-ctk runtime configure --runtime=docker || true
 
+# ── Install TDX measurement scripts ──────────────────────────────────────
+install -d -m 0755 /opt/devopsdefender
+install -m 0755 /tmp/measure-boot.sh /opt/devopsdefender/measure-boot.sh
+install -m 0755 /tmp/compute-expected-measurements.py /opt/devopsdefender/compute-expected-measurements.py
+
+# ── Compute and store binary hashes for attestation ──────────────────────
+python3 -c "
+import hashlib, json, os
+binaries = {'/usr/local/bin/dd-agent': '', '/usr/bin/cloudflared': ''}
+for path in sorted(binaries):
+    if os.path.isfile(path):
+        with open(path, 'rb') as f:
+            binaries[path] = hashlib.sha384(f.read()).hexdigest()
+    else:
+        binaries[path] = 'missing'
+manifest_json = json.dumps(binaries, sort_keys=True, separators=(',', ':'))
+manifest_hash = hashlib.sha384(manifest_json.encode()).hexdigest()
+result = {'binary_manifest': binaries, 'binary_manifest_hash': manifest_hash}
+with open('/etc/devopsdefender/image-measurements.json', 'w') as f:
+    json.dump(result, f, indent=2)
+print(f'Binary manifest hash: {manifest_hash}')
+"
+
 # ── Create config directory ───────────────────────────────────────────────
 install -d -m 0755 /etc/devopsdefender
 
@@ -88,6 +111,7 @@ Type=simple
 User=root
 Environment=DD_AGENT_MODE=agent
 Environment=DD_CONFIG=/etc/devopsdefender/agent.json
+ExecStartPre=/opt/devopsdefender/measure-boot.sh
 ExecStart=/usr/local/bin/dd-agent
 Restart=on-failure
 RestartSec=5

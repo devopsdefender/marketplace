@@ -118,6 +118,16 @@ build {
     only        = [for s in ["source.qemu.baremetal"] : s if var.cp_binary_path != ""]
   }
 
+  provisioner "file" {
+    source      = "${path.root}/../scripts/measure-boot.sh"
+    destination = "/tmp/measure-boot.sh"
+  }
+
+  provisioner "file" {
+    source      = "${path.root}/../scripts/compute-expected-measurements.py"
+    destination = "/tmp/compute-expected-measurements.py"
+  }
+
   provisioner "shell" {
     script          = "${path.root}/provision-baremetal-image.sh"
     execute_command = "chmod +x {{ .Path }}; {{ .Vars }} sudo -E bash -euxo pipefail {{ .Path }}"

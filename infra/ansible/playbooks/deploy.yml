@@ -220,6 +220,14 @@
           become: true
           changed_when: true
 
+        - name: Extract image measurements from built image
+          ansible.builtin.shell: |
+            virt-cat -a "{{ devopsdefender_base_dir }}/images/dd-baremetal.qcow2" \
+              /etc/devopsdefender/image-measurements.json \
+              > "{{ devopsdefender_base_dir }}/images/image-measurements.json"
+          become: true
+          changed_when: true
+
     # ── Deploy agent VM ────────────────────────────────────────────────
     - name: Copy VM scripts
       ansible.builtin.copy:
@@ -275,6 +283,11 @@
         agent_launch_args: "{{ agent_launch_args + ['--no-seal'] }}"
       when: dd_env == 'staging'
 
+    - name: Enable TDX for production
+      ansible.builtin.set_fact:
+        agent_launch_args: "{{ agent_launch_args + ['--tdx'] }}"
+      when: dd_env == 'production'
+
     - name: Launch agent VM
       ansible.builtin.command:
         argv: "{{ agent_launch_args }}"
@@ -292,3 +305,32 @@
       ansible.builtin.debug:
         var: vm_status.stdout_lines
       when: vm_status.stdout_lines is defined
+
+    # ── TDX attestation: compute and register expected measurements ────────
+    - name: Compute expected measurements
+      ansible.builtin.command:
+        argv:
+          - python3
+          - /opt/devopsdefender/compute-expected-measurements.py
+          - --image-measurements
+          - "{{ devopsdefender_base_dir }}/images/image-measurements.json"
+          - --agent-config
+          - /tmp/dd-deploy/agent.json
+          - --output
+          - /tmp/dd-deploy/expected-measurements.json
+      when: dd_env == 'production'
+
+    - name: Read expected measurements
+      ansible.builtin.slurp:
+        src: /tmp/dd-deploy/expected-measurements.json
+      register: expected_measurements_b64
+      when: dd_env == 'production'
+
+    - name: Register expected measurements with control plane
+      ansible.builtin.uri:
+        url: "{{ cp_url }}/api/v1/attestation/expected"
+        method: POST
+        body_format: json
+        body: "{{ expected_measurements_b64.content | b64decode }}"
+        status_code: [200, 201]
+      when: dd_env == 'production'
