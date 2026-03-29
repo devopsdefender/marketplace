@@ -44,8 +44,23 @@ Skills are markdown files in `config/skills/` that define what OpenClaw can do:
 
 - **`capacity.md`** — Manage compute nodes (launch, stop, monitor VMs)
 - **`payments.md`** — BTC payment processing for capacity rentals
+- **`attestation.md`** — Scalable heartbeat, metrics, logs, and attestation aggregation
 
 To add a new skill, create a markdown file describing the capability. OpenClaw loads it automatically.
+
+## Apps
+
+### Attestation Aggregator
+
+A TDX-attested service that sits between DD agents and the control plane, enabling telemetry and attestation at scale. Instead of every agent maintaining a direct connection to CP for heartbeats, metrics, logs, and attestation quotes, agents report to a local aggregator which batches and forwards everything.
+
+```
+Agents (hundreds) ──> Aggregator (TDX-attested) ──batch──> Control Plane
+```
+
+**Trust model:** The aggregator runs inside a TDX enclave and attests itself to the control plane at startup. CP issues a short-lived relay token; all forwarded batches are signed with it. If the aggregator is compromised, the token is revoked.
+
+See `apps/attestation-aggregator/` for the source and `config/skills/attestation.md` for the OpenClaw skill definition.
 
 ## Building your own DD + OpenClaw app
 

@@ -124,3 +124,37 @@ jobs:
             exit 1
           fi
           echo "Marketplace deployed. OpenClaw Gateway running on DD TDX agent."
+
+      - name: Deploy attestation aggregator
+        run: |
+          CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${CP_URL}/api/v1/deploy" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -cn \
+              --arg image "ghcr.io/devopsdefender/attestation-aggregator:latest" \
+              --arg name "attestation-aggregator" \
+              --arg version "${{ github.sha }}" \
+              '{
+                image: $image,
+                app_name: $name,
+                app_version: $version,
+                env: [
+                  "AGGREGATOR_MODE=relay",
+                  ("CP_URL=https://app-staging." + (env.DD_CF_DOMAIN // "devopsdefender.com")),
+                  "HEARTBEAT_INTERVAL_MS=5000",
+                  "FLUSH_INTERVAL_MS=10000",
+                  "MAX_BATCH_SIZE=500",
+                  "ATTESTATION_REFRESH_SECS=300"
+                ],
+                ports: ["9090:9090"]
+              }')")
+
+          HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
+          BODY=$(echo "${RESPONSE}" | sed '$d')
+          echo "HTTP ${HTTP_CODE}: ${BODY}"
+          if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 300 ]; then
+            echo "::error::Attestation aggregator deploy failed: ${BODY}"
+            exit 1
+          fi
+          echo "Attestation aggregator deployed on DD TDX agent."
