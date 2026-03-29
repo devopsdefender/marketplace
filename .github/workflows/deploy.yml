@@ -109,21 +109,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging
     steps:
-      - name: Wait for agent to register
+      - name: Verify agent is registered
         run: |
           CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
-          AGENT_READY=false
-          for i in $(seq 1 30); do
-            COUNT=$(curl -sf "${CP_URL}/api/v1/agents" | jq '[.[] | select(.registration_state == "ready")] | length' 2>/dev/null || echo 0)
-            if [ "$COUNT" -gt 0 ]; then
-              echo "Agent ready"
-              AGENT_READY=true
-              break
-            fi
-            echo "  waiting for agent (${i}/30)..." && sleep 10
-          done
-          if [ "$AGENT_READY" != "true" ]; then
-            echo "::error::Agent did not register within 5 minutes"
+          COUNT=$(curl -sf "${CP_URL}/api/v1/agents" | jq '[.[] | select(.registration_state == "ready")] | length')
+          echo "Ready agents: ${COUNT}"
+          if [ "$COUNT" -lt 1 ]; then
+            echo "::error::No registered agent found"
             exit 1
           fi
 
