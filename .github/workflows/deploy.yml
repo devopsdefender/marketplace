@@ -16,8 +16,31 @@ concurrency:
 permissions:
   id-token: write
   contents: read
+  packages: write
 
 jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/devopsdefender/marketplace
+          tags: type=sha,prefix=
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
   deploy-vm:
     runs-on: ubuntu-latest
     steps:
@@ -86,7 +109,7 @@ jobs:
         run: rm -f /tmp/deploy-key
 
   deploy-marketplace:
-    needs: deploy-vm
+    needs: [build-image, deploy-vm]
     runs-on: ubuntu-latest
     environment: staging
     steps:
@@ -105,16 +128,16 @@ jobs:
         run: |
           CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
 
-          ENV_VARS=$(cat config/defaults.env | grep -v '^#' | grep -v '^$' | jq -R . | jq -s .)
+          IMAGE="${{ needs.build-image.outputs.image }}"
+          echo "Deploying image: ${IMAGE}"
 
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${CP_URL}/api/v1/deploy" \
             -H "Content-Type: application/json" \
             -d "$(jq -cn \
-              --arg image "ghcr.io/openclaw/openclaw:latest" \
+              --arg image "$IMAGE" \
               --arg name "marketplace" \
               --arg version "${{ github.sha }}" \
-              --argjson env "$ENV_VARS" \
-              '{image: $image, app_name: $name, app_version: $version, env: $env, ports: ["8080:3000"], node_size: "standard"}')")
+              '{image: $image, app_name: $name, app_version: $version, ports: ["8080:18789"], node_size: "standard"}')")
 
           HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
           BODY=$(echo "${RESPONSE}" | sed '$d')
