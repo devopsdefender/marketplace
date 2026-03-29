@@ -95,17 +95,33 @@ jobs:
       - name: Wait for agent to register
         run: |
           CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
+          AGENT_READY=false
           for i in $(seq 1 30); do
             COUNT=$(curl -sf "${CP_URL}/api/v1/agents" | jq '[.[] | select(.registration_state == "ready")] | length' 2>/dev/null || echo 0)
-            [ "$COUNT" -gt 0 ] && echo "Agent ready" && break
+            if [ "$COUNT" -gt 0 ]; then
+              echo "Agent ready"
+              AGENT_READY=true
+              break
+            fi
             echo "  waiting for agent (${i}/30)..." && sleep 10
           done
+          if [ "$AGENT_READY" != "true" ]; then
+            echo "::error::Agent did not register within 5 minutes"
+            exit 1
+          fi
 
       - name: Deploy OpenClaw marketplace
         run: |
           CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
 
           ENV_VARS=$(cat config/defaults.env | grep -v '^#' | grep -v '^$' | jq -R . | jq -s .)
+
+          # Collect skills from config/skills/ so OpenClaw knows its capabilities
+          SKILLS=$(find config/skills -name '*.md' -type f | sort | while read -r f; do
+            name="$(basename "$f" .md)"
+            content="$(cat "$f")"
+            jq -cn --arg name "$name" --arg content "$content" '{name: $name, content: $content}'
+          done | jq -s .)
 
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${CP_URL}/api/v1/deploy" \
             -H "Content-Type: application/json" \
@@ -114,7 +130,8 @@ jobs:
               --arg name "marketplace" \
               --arg version "${{ github.sha }}" \
               --argjson env "$ENV_VARS" \
-              '{image: $image, app_name: $name, app_version: $version, env: $env, ports: ["8080:3000"]}')")
+              --argjson skills "$SKILLS" \
+              '{image: $image, app_name: $name, app_version: $version, env: $env, skills: $skills, ports: ["8080:3000"]}')")
 
           HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
           BODY=$(echo "${RESPONSE}" | sed '$d')
