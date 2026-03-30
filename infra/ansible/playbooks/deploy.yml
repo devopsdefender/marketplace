@@ -89,6 +89,12 @@
         - "{{ devopsdefender_base_dir }}/vms"
       become: true
 
+    - name: Kill orphaned Packer QEMU processes
+      ansible.builtin.shell: |
+        pkill -f 'qemu-system.*packer' || true
+      become: true
+      changed_when: true
+
     - name: Clean stale deploy workspace
       ansible.builtin.file:
         path: /tmp/dd-deploy
