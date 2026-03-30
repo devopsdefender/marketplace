@@ -40,6 +40,14 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+      - name: Ensure package is public
+        continue-on-error: true
+        run: |
+          curl -s -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/orgs/devopsdefender/packages/container/marketplace" \
+            -d '{"visibility":"public"}' | jq -r '.visibility // .message'
 
   deploy-vm:
     runs-on: ubuntu-latest
