@@ -95,6 +95,7 @@ jobs:
 
       - name: Set up SSH
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
           echo "${{ secrets.BAREMETAL_SSH_KEY }}" > /tmp/deploy-key
           chmod 600 /tmp/deploy-key
@@ -104,6 +105,7 @@ jobs:
         env:
           ANSIBLE_HOST_KEY_CHECKING: "false"
         run: |
+          set -euo pipefail
           sha12="$(echo "${{ github.sha }}" | cut -c1-12)"
           ansible-playbook infra/ansible/playbooks/deploy.yml \
             -i infra/ansible/inventory/staging.yml \
@@ -114,7 +116,9 @@ jobs:
 
       - name: Cleanup SSH key
         if: always()
-        run: rm -f /tmp/deploy-key
+        run: |
+          set -euo pipefail
+          rm -f /tmp/deploy-key
 
   deploy-marketplace:
     needs: [build-image, deploy-vm]
@@ -185,6 +189,10 @@ jobs:
           fi
 
           DEP_ID=$(echo "${BODY}" | jq -r .deployment_id)
+          if [ -z "${DEP_ID}" ] || [ "${DEP_ID}" = "null" ]; then
+            echo "::error::Invalid deployment_id in deploy response: ${BODY}"
+            exit 1
+          fi
           echo "deployment_id=${DEP_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Wait for deployment to be running
@@ -193,8 +201,8 @@ jobs:
           CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
           DEP_ID="${{ steps.deploy.outputs.deployment_id }}"
           for i in $(seq 1 24); do
-            RESP=$(curl -fsSL "${CP_URL}/api/v1/deployments/${DEP_ID}")
-            STATUS=$(echo "$RESP" | jq -r .status)
+            RESP=$(curl -sSL "${CP_URL}/api/v1/deployments/${DEP_ID}" 2>/dev/null || echo '{}')
+            STATUS=$(echo "$RESP" | jq -r '.status // "unknown"')
             echo "  attempt ${i}/24: status=${STATUS}"
             [ "$STATUS" = "running" ] && echo "Marketplace is live!" && exit 0
             if [ "$STATUS" = "failed" ]; then
