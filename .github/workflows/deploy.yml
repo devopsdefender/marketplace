@@ -214,7 +214,10 @@ jobs:
               --arg ns "$NODE_SIZE" \
               '{image: $image, app_name: $name, app_version: $version, ports: ["8080:18789"], node_size: $ns, env: [
                 "OPENCLAW_PRIMARY_MODEL=ollama/qwen3-coder:480b-a35b",
-                "OPENCLAW_FALLBACK_MODEL=ollama/qwen3-coder-next"
+                "OPENCLAW_FALLBACK_MODEL=ollama/qwen3-coder-next",
+                "GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}",
+                "GCP_ZONE=${{ vars.GCP_ZONE || 'us-central1-c' }}",
+                "DD_GCP_IMAGE_FAMILY=${{ vars.DD_GCP_IMAGE_FAMILY || 'dd-agent-main' }}"
               ]}')")
 
           HTTP_CODE=$(echo "${RESPONSE}" | tail -1)

@@ -12,10 +12,22 @@ You handle Bitcoin payments for compute capacity on the DevOps Defender marketpl
 
 ## Pricing table
 
+### Local baremetal (preferred — cheaper)
+
 | Node Type | Specs | BTC/hour |
 |-----------|-------|----------|
 | Standard  | 8 vCPU, 16GB RAM | 0.001 |
 | GPU (H100)| 16 vCPU, 64GB RAM, NVIDIA H100 | 0.01 |
+
+### GCP overflow (when local is full)
+
+| Node Type | Specs | BTC/hour |
+|-----------|-------|----------|
+| Tiny      | 4 vCPU, 16GB RAM | 0.002 |
+| Standard  | 8 vCPU, 32GB RAM | 0.003 |
+| LLM       | 22 vCPU, 88GB RAM | 0.015 |
+
+GCP nodes cost more due to cloud provider charges. Always invoice at the GCP rate when provisioning on GCP.
 
 ## Wallet integration
 
