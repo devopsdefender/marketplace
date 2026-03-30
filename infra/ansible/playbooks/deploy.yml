@@ -48,13 +48,20 @@
       changed_when: false
       become: true
 
+    - name: Define default libvirt network
+      ansible.builtin.command:
+        argv: [virsh, net-define, /usr/share/libvirt/networks/default.xml]
+      become: true
+      when: libvirt_default_net.rc != 0
+      failed_when: false
+      changed_when: true
+
     - name: Start default libvirt network
       ansible.builtin.command:
         argv: [virsh, net-start, default]
       failed_when: false
       changed_when: true
       become: true
-      when: libvirt_default_net.rc == 0
 
     - name: Autostart default libvirt network
       ansible.builtin.command:
@@ -62,7 +69,6 @@
       failed_when: false
       changed_when: true
       become: true
-      when: libvirt_default_net.rc == 0
 
     - name: Check /dev/kvm exists
       ansible.builtin.stat:
@@ -88,6 +94,12 @@
         - "{{ devopsdefender_base_dir }}/images"
         - "{{ devopsdefender_base_dir }}/vms"
       become: true
+
+    - name: Kill orphaned Packer QEMU processes
+      ansible.builtin.shell: |
+        pgrep -f '[q]emu-system.*packer' | xargs -r kill || true
+      become: true
+      changed_when: false
 
     - name: Clean stale deploy workspace
       ansible.builtin.file:

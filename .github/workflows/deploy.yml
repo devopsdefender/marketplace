@@ -8,15 +8,25 @@ on:
       dd_agent_binary_url:
         description: "Override URL for dd-agent binary (must be < 24h old)"
         default: ""
+      environment:
+        description: "Deploy target"
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
 
 concurrency:
-  group: marketplace-staging
+  group: marketplace-${{ inputs.environment || 'staging' }}
   cancel-in-progress: true
 
 permissions:
   id-token: write
   contents: read
   packages: write
+
+env:
+  DD_ENV: ${{ inputs.environment || 'staging' }}
 
 jobs:
   build-image:
@@ -40,6 +50,14 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+      - name: Ensure package is public
+        continue-on-error: true
+        run: |
+          curl -s -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/orgs/devopsdefender/packages/container/marketplace" \
+            -d '{"visibility":"public"}' | jq -r '.visibility // .message'
 
   deploy-vm:
     runs-on: ubuntu-latest
@@ -85,51 +103,107 @@ jobs:
           chmod +x /tmp/dd-bin/dd-agent
           echo "  Binary ready: $(ls -lh /tmp/dd-bin/dd-agent)"
 
+      - name: Resolve environment config
+        id: env
+        run: |
+          set -euo pipefail
+          if [ "$DD_ENV" = "production" ]; then
+            echo "inventory=infra/ansible/inventory/production.yml" >> "$GITHUB_OUTPUT"
+            echo "ssh_host=162.222.34.121" >> "$GITHUB_OUTPUT"
+            echo "cp_host=app.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}" >> "$GITHUB_OUTPUT"
+            echo "node_size=llm" >> "$GITHUB_OUTPUT"
+          else
+            echo "inventory=infra/ansible/inventory/staging.yml" >> "$GITHUB_OUTPUT"
+            echo "ssh_host=57.130.10.246" >> "$GITHUB_OUTPUT"
+            echo "cp_host=app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}" >> "$GITHUB_OUTPUT"
+            echo "node_size=standard" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up SSH
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
           echo "${{ secrets.BAREMETAL_SSH_KEY }}" > /tmp/deploy-key
           chmod 600 /tmp/deploy-key
-          ssh-keyscan -H 57.130.10.246 >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H ${{ steps.env.outputs.ssh_host }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Deploy agent VM
         env:
           ANSIBLE_HOST_KEY_CHECKING: "false"
         run: |
+          set -euo pipefail
           sha12="$(echo "${{ github.sha }}" | cut -c1-12)"
           ansible-playbook infra/ansible/playbooks/deploy.yml \
-            -i infra/ansible/inventory/staging.yml \
+            -i ${{ steps.env.outputs.inventory }} \
             -e "agent_binary_local=/tmp/dd-bin/dd-agent" \
             -e "packer_template_dir=${GITHUB_WORKSPACE}/infra/packer" \
             -e "image_name=dd-baremetal-${sha12}" \
-            -e "cp_url=https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
+            -e "cp_url=https://${{ steps.env.outputs.cp_host }}"
 
       - name: Cleanup SSH key
         if: always()
-        run: rm -f /tmp/deploy-key
+        run: |
+          set -euo pipefail
+          rm -f /tmp/deploy-key
+
+    outputs:
+      cp_host: ${{ steps.env.outputs.cp_host }}
+      node_size: ${{ steps.env.outputs.node_size }}
 
   deploy-marketplace:
     needs: [build-image, deploy-vm]
     runs-on: ubuntu-latest
-    environment: staging
+    environment: ${{ inputs.environment || 'staging' }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Wait for agent to register
+      - name: Clean up old agents
         run: |
-          CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
+          set -euo pipefail
+          CP_URL="https://${{ needs.deploy-vm.outputs.cp_host }}"
+          NODE_SIZE="${{ needs.deploy-vm.outputs.node_size }}"
+
+          OLD_IDS=$(curl -sf "${CP_URL}/api/v1/agents" \
+            | jq -r --arg ns "$NODE_SIZE" '.[] | select(.node_size == $ns) | .id')
+
+          for ID in $OLD_IDS; do
+            echo "  deleting old agent ${ID:0:8}"
+            curl -sf -X DELETE "${CP_URL}/api/v1/agents/${ID}" || true
+          done
+
+      - name: Wait for new agent to register
+        run: |
+          set -euo pipefail
+          CP_URL="https://${{ needs.deploy-vm.outputs.cp_host }}"
+          NODE_SIZE="${{ needs.deploy-vm.outputs.node_size }}"
+
           for i in $(seq 1 30); do
-            COUNT=$(curl -sf "${CP_URL}/api/v1/agents" | jq '[.[] | select(.registration_state == "ready" and .node_size == "standard")] | length' 2>/dev/null || echo 0)
-            [ "$COUNT" -gt 0 ] && echo "Agent ready" && break
+            AGENT=$(curl -sf "${CP_URL}/api/v1/agents" \
+              | jq -r --arg ns "$NODE_SIZE" \
+                '[.[] | select(.registration_state == "ready" and .node_size == $ns)] | first // empty' \
+              2>/dev/null || true)
+
+            if [ -n "$AGENT" ]; then
+              echo "Agent ready: $(echo "$AGENT" | jq -r '.id[0:8]')"
+              break
+            fi
             echo "  waiting for agent (${i}/30)..." && sleep 10
           done
 
+          if [ -z "$AGENT" ]; then
+            echo "::error::No $NODE_SIZE agent registered within 5 minutes"
+            exit 1
+          fi
+
       - name: Deploy OpenClaw marketplace
+        id: deploy
         run: |
-          CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
+          set -euo pipefail
+          CP_URL="https://${{ needs.deploy-vm.outputs.cp_host }}"
+          NODE_SIZE="${{ needs.deploy-vm.outputs.node_size }}"
 
           IMAGE="${{ needs.build-image.outputs.image }}"
-          echo "Deploying image: ${IMAGE}"
+          echo "Deploying image: ${IMAGE} (node_size=${NODE_SIZE})"
 
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${CP_URL}/api/v1/deploy" \
             -H "Content-Type: application/json" \
@@ -137,7 +211,14 @@ jobs:
               --arg image "$IMAGE" \
               --arg name "marketplace" \
               --arg version "${{ github.sha }}" \
-              '{image: $image, app_name: $name, app_version: $version, ports: ["8080:18789"], node_size: "standard"}')")
+              --arg ns "$NODE_SIZE" \
+              '{image: $image, app_name: $name, app_version: $version, ports: ["8080:18789"], node_size: $ns, env: [
+                "OPENCLAW_PRIMARY_MODEL=ollama/qwen3-coder:480b-a35b",
+                "OPENCLAW_FALLBACK_MODEL=ollama/qwen3-coder-next",
+                "GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}",
+                "GCP_ZONE=${{ vars.GCP_ZONE || 'us-central1-c' }}",
+                "DD_GCP_IMAGE_FAMILY=${{ vars.DD_GCP_IMAGE_FAMILY || 'dd-agent-main' }}"
+              ]}')")
 
           HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
           BODY=$(echo "${RESPONSE}" | sed '$d')
@@ -146,4 +227,30 @@ jobs:
             echo "::error::Deploy failed: ${BODY}"
             exit 1
           fi
-          echo "Marketplace deployed. OpenClaw Gateway running on DD TDX agent."
+
+          DEP_ID=$(echo "${BODY}" | jq -r .deployment_id)
+          if [ -z "${DEP_ID}" ] || [ "${DEP_ID}" = "null" ]; then
+            echo "::error::Invalid deployment_id in deploy response: ${BODY}"
+            exit 1
+          fi
+          echo "deployment_id=${DEP_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deployment to be running
+        run: |
+          set -euo pipefail
+          CP_URL="https://${{ needs.deploy-vm.outputs.cp_host }}"
+          DEP_ID="${{ steps.deploy.outputs.deployment_id }}"
+          for i in $(seq 1 24); do
+            RESP=$(curl -sSL "${CP_URL}/api/v1/deployments/${DEP_ID}" 2>/dev/null || echo '{}')
+            STATUS=$(echo "$RESP" | jq -r '.status // "unknown"')
+            echo "  attempt ${i}/24: status=${STATUS}"
+            [ "$STATUS" = "running" ] && echo "Marketplace is live!" && exit 0
+            if [ "$STATUS" = "failed" ]; then
+              echo "$RESP" | jq -r '.error_message // "no error message"'
+              echo "::error::Marketplace deployment failed"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error::Marketplace deployment timed out (120s)"
+          exit 1

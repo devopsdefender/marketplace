@@ -8,5 +8,18 @@
     "controlUi": {
       "dangerouslyAllowHostHeaderOriginFallback": true
     }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "${OPENCLAW_PRIMARY_MODEL:-ollama/qwen3-coder-next}",
+        "fallbacks": ["${OPENCLAW_FALLBACK_MODEL:-ollama/qwen3-coder-next}"]
+      },
+      "providers": {
+        "ollama": {
+          "baseUrl": "http://127.0.0.1:11434/v1"
+        }
+      }
+    }
   }
 }
