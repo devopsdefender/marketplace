@@ -117,15 +117,33 @@ jobs:
 
       - name: Wait for agent to register
         run: |
+          set -euo pipefail
           CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
+          FOUND=false
           for i in $(seq 1 30); do
-            COUNT=$(curl -sf "${CP_URL}/api/v1/agents" | jq '[.[] | select(.registration_state == "ready" and .node_size == "standard")] | length' 2>/dev/null || echo 0)
-            [ "$COUNT" -gt 0 ] && echo "Agent ready" && break
+            COUNT=$(curl -sf "${CP_URL}/api/v1/agents" \
+              | jq '[.[] | select(.registration_state == "ready" and .node_size == "standard")] | length' \
+              2>/dev/null || echo 0)
+            if [ "$COUNT" -gt 0 ]; then
+              echo "Agent ready (found ${COUNT} standard agent(s))"
+              FOUND=true
+              break
+            fi
             echo "  waiting for agent (${i}/30)..." && sleep 10
           done
 
+          if [ "$FOUND" = "false" ]; then
+            echo "::group::Current agents (debug)"
+            curl -sf "${CP_URL}/api/v1/agents" | jq '.[] | {id: .id[0:8], status, node_size, registration_state}' || true
+            echo "::endgroup::"
+            echo "::error::No standard agent registered within 5 minutes"
+            exit 1
+          fi
+
       - name: Deploy OpenClaw marketplace
+        id: deploy
         run: |
+          set -euo pipefail
           CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
 
           IMAGE="${{ needs.build-image.outputs.image }}"
@@ -146,4 +164,21 @@ jobs:
             echo "::error::Deploy failed: ${BODY}"
             exit 1
           fi
-          echo "Marketplace deployed. OpenClaw Gateway running on DD TDX agent."
+
+          DEP_ID=$(echo "${BODY}" | jq -r .deployment_id)
+          echo "deployment_id=${DEP_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deployment to be running
+        run: |
+          set -euo pipefail
+          CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
+          DEP_ID="${{ steps.deploy.outputs.deployment_id }}"
+          for i in $(seq 1 12); do
+            STATUS=$(curl -fsSL "${CP_URL}/api/v1/deployments/${DEP_ID}" | jq -r .status)
+            echo "  attempt ${i}/12: status=${STATUS}"
+            [ "$STATUS" = "running" ] && echo "Marketplace is live!" && exit 0
+            [ "$STATUS" = "failed" ] && echo "::error::Marketplace deployment failed" && exit 1
+            sleep 5
+          done
+          echo "::error::Marketplace deployment timed out (60s)"
+          exit 1
