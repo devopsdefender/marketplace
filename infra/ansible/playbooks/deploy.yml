@@ -91,9 +91,9 @@
 
     - name: Kill orphaned Packer QEMU processes
       ansible.builtin.shell: |
-        pkill -f 'qemu-system.*packer' || true
+        pgrep -f '[q]emu-system.*packer' | xargs -r kill || true
       become: true
-      changed_when: true
+      changed_when: false
 
     - name: Clean stale deploy workspace
       ansible.builtin.file:
