@@ -140,7 +140,7 @@ jobs:
                     .registration_state == "ready"
                     and .node_size == "standard"
                     and .last_heartbeat_at != null
-                    and ((($now - (.last_heartbeat_at | sub("\\+.*";"Z") | fromdateiso8601))) < 60)
+                    and ((($now - (.last_heartbeat_at | sub("\\.[0-9]+.*";"Z") | fromdateiso8601))) < 60)
                   )] | first // empty' 2>/dev/null || true)
 
             if [ -n "$AGENT" ]; then
