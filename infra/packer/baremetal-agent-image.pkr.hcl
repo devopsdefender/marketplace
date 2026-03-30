@@ -34,7 +34,7 @@ variable "accelerator" {
 
 variable "disk_size" {
   type    = string
-  default = "8G"
+  default = "20G"
 }
 
 variable "cpus" {
