@@ -127,48 +127,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Wait for fresh agent and stale agents to expire
+      - name: Clean up old standard agents
         run: |
           set -euo pipefail
           CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
 
-          # The deploy-vm job killed the old VM and launched a new one.
-          # We need to:
-          #  1. Wait for the new agent to register (heartbeat within 60s)
-          #  2. Wait for it to be the ONLY standard agent with a fresh
-          #     heartbeat, so find_available_agent won't pick a stale one.
-          #
-          # The CP considers agents stale after 2 min without a heartbeat.
-          READY=false
-          for i in $(seq 1 30); do
-            NOW=$(date -u +%s)
-            AGENTS=$(curl -sf "${CP_URL}/api/v1/agents" \
-              | jq --argjson now "$NOW" '
-                  [.[] | select(
-                    .registration_state == "ready"
-                    and .node_size == "standard"
-                    and .last_heartbeat_at != null
-                    and ((($now - (.last_heartbeat_at | sub("\\.[0-9]+.*";"Z") | fromdateiso8601))) < 120)
-                  )]' 2>/dev/null || echo '[]')
+          # deploy-vm just replaced the agent VM.  Delete all existing
+          # standard agents so find_available_agent can only pick the
+          # new one once it registers.
+          OLD_IDS=$(curl -sf "${CP_URL}/api/v1/agents" \
+            | jq -r '.[] | select(.node_size == "standard") | .id')
 
-            COUNT=$(echo "$AGENTS" | jq 'length')
-            if [ "$COUNT" -eq 1 ]; then
-              echo "Exactly one fresh standard agent: $(echo "$AGENTS" | jq -r '.[0].id[0:8]')"
-              READY=true
-              break
-            elif [ "$COUNT" -gt 1 ]; then
-              echo "  ${COUNT} standard agents still fresh -- waiting for old one to expire (${i}/30)..."
-            else
-              echo "  waiting for agent to register (${i}/30)..."
-            fi
-            sleep 10
+          for ID in $OLD_IDS; do
+            echo "  deleting old agent ${ID:0:8}"
+            curl -sf -X DELETE "${CP_URL}/api/v1/agents/${ID}" || true
           done
 
-          if [ "$READY" = "false" ]; then
-            echo "::group::Current agents (debug)"
-            curl -sf "${CP_URL}/api/v1/agents" | jq '.[] | {id: .id[0:8], status, node_size, registration_state, last_heartbeat_at}' || true
-            echo "::endgroup::"
-            echo "::error::Could not isolate a single fresh standard agent within 5 minutes"
+      - name: Wait for new agent to register
+        run: |
+          set -euo pipefail
+          CP_URL="https://app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}"
+
+          for i in $(seq 1 30); do
+            AGENT=$(curl -sf "${CP_URL}/api/v1/agents" \
+              | jq -r '[.[] | select(.registration_state == "ready" and .node_size == "standard")] | first // empty' \
+              2>/dev/null || true)
+
+            if [ -n "$AGENT" ]; then
+              echo "Agent ready: $(echo "$AGENT" | jq -r '.id[0:8]')"
+              break
+            fi
+            echo "  waiting for agent (${i}/30)..." && sleep 10
+          done
+
+          if [ -z "$AGENT" ]; then
+            echo "::error::No standard agent registered within 5 minutes"
             exit 1
           fi
 
