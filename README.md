@@ -1,64 +1,83 @@
 # DD Marketplace
 
-A compute marketplace built on [DevOps Defender](https://devopsdefender.com) + [OpenClaw](https://openclaw.ai). Rent TDX-verified enclave capacity, pay with BTC.
+Run AI workloads on confidential hardware. Deploy OpenClaw, Claude Code, and signal-cli as apps on a DD agent — all sharing the same machine, seeing each other's processes, communicating via shared filesystem.
 
-This repo is also the reference example for building apps on DD + OpenClaw.
+## Apps
 
-## How it works
-
-1. **DD deploys OpenClaw** — the marketplace orchestrator runs inside a TDX enclave
-2. **OpenClaw manages capacity** — uses skills (markdown) to provision and manage confidential VMs
-3. **Customers pay with BTC** — wallet integration inside the enclave (keys never leave hardware)
-4. **Nodes register with DD** — each provisioned VM becomes a DD agent with attestation
-
-```
-Customer ──BTC──> Marketplace (OpenClaw on TDX)
-                       │
-                       ├── Launch confidential VM on local GPU host
-                       ├── Agent registers with DD control plane
-                       ├── Customer deploys workload to their enclave
-                       └── Teardown on rental expiry
-```
+| App | Image | Description |
+|-----|-------|-------------|
+| OpenClaw | `ghcr.io/devopsdefender/openclaw` | AI orchestrator with skills |
+| Claude Code | `ghcr.io/devopsdefender/claude-code` | Coding assistant |
+| signal-cli | `ghcr.io/devopsdefender/signal-cli` | Signal messaging |
 
 ## Quick start
 
-### 1. Fork this repo
+### 1. Connect to a DD agent
 
-### 2. Set GitHub secrets
+```bash
+dd connect --to your-agent.devopsdefender.com
+```
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `BAREMETAL_SSH_KEY` | Yes | SSH key for the OVH deployment host |
+### 2. Deploy apps
 
-### 3. Open a PR
+```
+dd> deploy ghcr.io/devopsdefender/openclaw --tty
+dd> deploy ghcr.io/devopsdefender/claude-code --tty
+dd> deploy ghcr.io/devopsdefender/signal-cli
+dd> jobs
+  [1] openclaw        running
+  [2] claude-code     running
+  [3] signal-cli      running
+```
 
-Triggers the deploy: provisions a DD agent VM, deploys OpenClaw with marketplace skills.
+### 3. Use them
 
-### 4. Connect
+All apps share the same machine:
+- Same network — OpenClaw talks to Claude Code on localhost
+- Same filesystem — write to `/shared`, every app can read it
+- Same PID namespace — `ps aux` shows all running apps
+- Signal-cli writes messages to `/shared/inbox`, Claude reads them
 
-Your marketplace is live at the Cloudflare tunnel URL assigned by DD.
+```
+dd> fg openclaw
+> use claude to summarize the latest signal messages
+```
 
-## Skills
+### 4. Browser access
 
-Skills are markdown files in `config/skills/` that define what OpenClaw can do:
+Open `https://your-agent.devopsdefender.com/session/openclaw` for a web terminal.
 
-- **`capacity.md`** — Manage compute nodes (launch, stop, monitor VMs)
-- **`payments.md`** — BTC payment processing for capacity rentals
+## How it works
 
-To add a new skill, create a markdown file describing the capability. OpenClaw loads it automatically.
+DD agents are remote shells on TDX confidential VMs. Apps are OCI images that get pulled and run as processes (not containers). Everything shares everything — like programs on a real computer, but the computer is a hardware-verified enclave.
 
-## Building your own DD + OpenClaw app
+```
+You (browser/CLI)
+  │ Noise-encrypted WebSocket
+  ↓
+DD Agent (TDX confidential VM)
+  ├── openclaw      ← AI orchestrator
+  ├── claude-code   ← coding assistant
+  ├── signal-cli    ← messaging
+  └── all share: PID, network, /shared filesystem
+```
 
-This repo shows the pattern:
+## Attestation
 
-1. Write your skills as markdown in `config/skills/`
-2. Set `config/defaults.env` for OpenClaw bootstrap
-3. The deploy workflow handles everything: VM provisioning, agent registration, OpenClaw deployment
-4. Fork, customize skills, push — you have your own DD-powered app
+When you connect via the Noise channel, the agent proves it's running on real TDX hardware. The attestation is verified before any data is sent.
 
-## Architecture
+## Adding your own node
 
-- **DD Control Plane** — GCP, manages agent registration and Cloudflare tunnels
-- **DD Agent** — OVH baremetal, runs the OpenClaw container via libvirt/KVM
-- **OpenClaw** — AI orchestrator inside TDX enclave, executes skills
-- **Capacity** — Local confidential VMs launched by OpenClaw on demand
+Boot the DD base image on any TDX-capable machine:
+
+```bash
+# GCP
+gcloud compute instances create my-node \
+  --machine-type=c3-standard-4 \
+  --confidential-compute-type=TDX
+
+# Or any machine with dd-agent installed
+DD_OWNER=your-github-username dd-agent
+```
+
+Then deploy apps to it with `dd deploy`.
