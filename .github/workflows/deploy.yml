@@ -120,8 +120,8 @@ jobs:
 
           echo "Deploying to ${SSH_HOST} (${DD_ENV})..."
 
-          # Stop existing dd-agent if running
-          $SSH "sudo pkill dd-agent 2>/dev/null || true; sleep 2"
+          # Stop existing dd-agent and any child workloads
+          $SSH "sudo pkill -9 dd-agent 2>/dev/null; sudo pkill -9 signal-cli 2>/dev/null; sudo pkill -9 openclaw 2>/dev/null; sudo pkill -9 cloudflared 2>/dev/null; sleep 2" || true
 
           # Download dd-agent binary from DD releases (newest release, including pre-releases)
           $SSH "sudo curl -fsSL -o /usr/local/bin/dd-agent \
