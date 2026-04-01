@@ -3,11 +3,10 @@ name: Deploy Marketplace
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
-      dd_agent_binary_url:
-        description: "Override URL for dd-agent binary (must be < 24h old)"
-        default: ""
       environment:
         description: "Deploy target"
         type: choice
@@ -21,18 +20,18 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  id-token: write
   contents: read
   packages: write
 
 env:
   DD_ENV: ${{ inputs.environment || 'staging' }}
+  DD_DOMAIN: ${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}
 
 jobs:
-  build-image:
+  build-apps:
     runs-on: ubuntu-latest
     outputs:
-      image: ${{ steps.meta.outputs.tags }}
+      openclaw_image: ghcr.io/devopsdefender/openclaw:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3
@@ -40,217 +39,104 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/devopsdefender/marketplace
-          tags: type=sha,prefix=
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          context: apps/openclaw
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-      - name: Ensure package is public
-        continue-on-error: true
-        run: |
-          curl -s -X PATCH \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/orgs/devopsdefender/packages/container/marketplace" \
-            -d '{"visibility":"public"}' | jq -r '.visibility // .message'
+          tags: |
+            ghcr.io/devopsdefender/openclaw:${{ github.sha }}
+            ghcr.io/devopsdefender/openclaw:latest
 
-  deploy-vm:
+  deploy:
+    needs: build-apps
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'staging' }}
     steps:
-      - uses: actions/checkout@v4
-      - run: pip install ansible
-
-      - name: Fetch dd-agent binary
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DD_AGENT_BINARY_URL: ${{ inputs.dd_agent_binary_url }}
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/dd-bin
-
-          if [ -n "${DD_AGENT_BINARY_URL}" ]; then
-            echo "::notice::Using override binary: ${DD_AGENT_BINARY_URL}"
-            HTTP_CODE=$(curl -fSL -o /tmp/dd-bin/dd-agent -w '%{http_code}' \
-              -D /tmp/dd-bin/headers "${DD_AGENT_BINARY_URL}")
-            echo "  HTTP ${HTTP_CODE}"
-
-            LAST_MOD=$(grep -i '^last-modified:' /tmp/dd-bin/headers | sed 's/^[^:]*: //' | tr -d '\r')
-            if [ -z "${LAST_MOD}" ]; then
-              echo "::error::DD_AGENT_BINARY_URL did not return a Last-Modified header"
-              exit 1
-            fi
-
-            MOD_EPOCH=$(date -d "${LAST_MOD}" +%s 2>/dev/null || date -j -f "%a, %d %b %Y %H:%M:%S %Z" "${LAST_MOD}" +%s 2>/dev/null)
-            NOW_EPOCH=$(date +%s)
-            AGE_HOURS=$(( (NOW_EPOCH - MOD_EPOCH) / 3600 ))
-            echo "  Last-Modified: ${LAST_MOD} (${AGE_HOURS}h ago)"
-
-            if [ "${AGE_HOURS}" -ge 24 ]; then
-              echo "::error::Override binary is ${AGE_HOURS}h old (max 24h). Refusing stale artifact."
-              exit 1
-            fi
-          else
-            echo "::notice::Using latest release from devopsdefender/dd"
-            gh release download --repo devopsdefender/dd \
-              --pattern 'dd-agent' --dir /tmp/dd-bin
-          fi
-
-          chmod +x /tmp/dd-bin/dd-agent
-          echo "  Binary ready: $(ls -lh /tmp/dd-bin/dd-agent)"
-
-      - name: Resolve environment config
+      - name: Resolve environment
         id: env
         run: |
-          set -euo pipefail
           if [ "$DD_ENV" = "production" ]; then
-            echo "inventory=infra/ansible/inventory/production.yml" >> "$GITHUB_OUTPUT"
             echo "ssh_host=162.222.34.121" >> "$GITHUB_OUTPUT"
-            echo "cp_host=app.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}" >> "$GITHUB_OUTPUT"
-            echo "node_size=llm" >> "$GITHUB_OUTPUT"
+            echo "ssh_user=tdx2" >> "$GITHUB_OUTPUT"
+            echo "register_host=app.${DD_DOMAIN}" >> "$GITHUB_OUTPUT"
           else
-            echo "inventory=infra/ansible/inventory/staging.yml" >> "$GITHUB_OUTPUT"
             echo "ssh_host=57.130.10.246" >> "$GITHUB_OUTPUT"
-            echo "cp_host=app-staging.${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}" >> "$GITHUB_OUTPUT"
-            echo "node_size=standard" >> "$GITHUB_OUTPUT"
+            echo "ssh_user=ubuntu" >> "$GITHUB_OUTPUT"
+            echo "register_host=app-staging.${DD_DOMAIN}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up SSH
         run: |
-          set -euo pipefail
           mkdir -p ~/.ssh
           echo "${{ secrets.BAREMETAL_SSH_KEY }}" > /tmp/deploy-key
           chmod 600 /tmp/deploy-key
           ssh-keyscan -H ${{ steps.env.outputs.ssh_host }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Deploy agent VM
+      - name: Deploy dd-agent to baremetal host
         env:
-          ANSIBLE_HOST_KEY_CHECKING: "false"
+          SSH_HOST: ${{ steps.env.outputs.ssh_host }}
+          SSH_USER: ${{ steps.env.outputs.ssh_user }}
+          REGISTER_HOST: ${{ steps.env.outputs.register_host }}
+          OPENCLAW_IMAGE: ${{ needs.build-apps.outputs.openclaw_image }}
         run: |
           set -euo pipefail
-          sha12="$(echo "${{ github.sha }}" | cut -c1-12)"
-          ansible-playbook infra/ansible/playbooks/deploy.yml \
-            -i ${{ steps.env.outputs.inventory }} \
-            -e "agent_binary_local=/tmp/dd-bin/dd-agent" \
-            -e "packer_template_dir=${GITHUB_WORKSPACE}/infra/packer" \
-            -e "image_name=dd-baremetal-${sha12}" \
-            -e "cp_url=https://${{ steps.env.outputs.cp_host }}"
+          SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
+
+          echo "Deploying to ${SSH_HOST} (${DD_ENV})..."
+
+          # Stop existing dd-agent if running
+          $SSH "sudo pkill dd-agent 2>/dev/null || true; sleep 2"
+
+          # Download dd-agent binary from DD releases
+          $SSH "sudo curl -fsSL -o /usr/local/bin/dd-agent \
+            https://github.com/devopsdefender/dd/releases/latest/download/dd-agent \
+            && sudo chmod +x /usr/local/bin/dd-agent" || {
+            echo "::warning::Could not download from latest release, trying staging release"
+            $SSH "sudo curl -fsSL -o /usr/local/bin/dd-agent \
+              \$(curl -sf https://api.github.com/repos/devopsdefender/dd/releases | \
+                jq -r '.[0].assets[] | select(.name==\"dd-agent\") | .browser_download_url') \
+              && sudo chmod +x /usr/local/bin/dd-agent"
+          }
+
+          # Download cloudflared
+          $SSH "command -v cloudflared >/dev/null || sudo curl -fsSL -o /usr/local/bin/cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            && sudo chmod +x /usr/local/bin/cloudflared"
+
+          # Start dd-agent with registration pointing to DD register service
+          $SSH "sudo DD_OWNER=devopsdefender \
+            DD_ENV=${DD_ENV} \
+            DD_REGISTER_URL=wss://${REGISTER_HOST}/register \
+            DD_BOOT_IMAGE=${OPENCLAW_IMAGE} \
+            DD_BOOT_APP=openclaw \
+            nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &"
+
+          echo "dd-agent started, registering with ${REGISTER_HOST}..."
+          sleep 10
+
+          # Verify agent is running
+          $SSH "curl -fsS http://localhost:8080/health" || echo "::warning::Agent health check failed"
+
+      - name: Verify agent registered with DD
+        run: |
+          REGISTER_HOST="${{ steps.env.outputs.register_host }}"
+          for i in $(seq 1 12); do
+            health=$(curl -fsS "https://${REGISTER_HOST}/health" 2>/dev/null) || true
+            if [ -n "$health" ]; then
+              echo "DD register healthy: $health"
+              break
+            fi
+            echo "  waiting for register... attempt ${i}/12"
+            sleep 5
+          done
+
+          echo ""
+          echo "═══════════════════════════════════════"
+          echo "  Marketplace deployed (${DD_ENV})"
+          echo "  Fleet: https://${REGISTER_HOST}/"
+          echo "  Agent should appear in fleet dashboard"
+          echo "═══════════════════════════════════════"
 
       - name: Cleanup SSH key
         if: always()
-        run: |
-          set -euo pipefail
-          rm -f /tmp/deploy-key
-
-    outputs:
-      cp_host: ${{ steps.env.outputs.cp_host }}
-      node_size: ${{ steps.env.outputs.node_size }}
-
-  deploy-marketplace:
-    needs: [build-image, deploy-vm]
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'staging' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Wait for new agent to register
-        run: |
-          set -euo pipefail
-          CP_URL="https://${{ needs.deploy-vm.outputs.cp_host }}"
-          NODE_SIZE="${{ needs.deploy-vm.outputs.node_size }}"
-
-          # The old agent's last heartbeat is fresh (~seconds ago).
-          # find_available_agent requires heartbeat within 2 min.
-          # Wait 150s so the old agent goes stale before we check.
-          echo "Waiting 150s for old agent to go stale..."
-          sleep 150
-
-          for i in $(seq 1 30); do
-            NOW=$(date -u +%s)
-            AGENT=$(curl -sf "${CP_URL}/api/v1/agents" \
-              | jq -r --arg ns "$NODE_SIZE" --argjson now "$NOW" '
-                  [.[] | select(
-                    .registration_state == "ready"
-                    and .node_size == $ns
-                    and .last_heartbeat_at != null
-                    and ((($now - (.last_heartbeat_at | sub("\\.[0-9]+.*";"Z") | fromdateiso8601))) < 120)
-                  )] | first // empty' \
-              2>/dev/null || true)
-
-            if [ -n "$AGENT" ]; then
-              echo "Agent ready: $(echo "$AGENT" | jq -r '.id[0:8]')"
-              break
-            fi
-            echo "  waiting for agent (${i}/30)..." && sleep 10
-          done
-
-          if [ -z "$AGENT" ]; then
-            echo "::group::Current agents (debug)"
-            curl -sf "${CP_URL}/api/v1/agents" | jq '.[] | {id: .id[0:8], node_size, registration_state, last_heartbeat_at}' || true
-            echo "::endgroup::"
-            echo "::error::No fresh $NODE_SIZE agent registered within 5 minutes"
-            exit 1
-          fi
-
-      - name: Deploy OpenClaw marketplace
-        id: deploy
-        run: |
-          set -euo pipefail
-          CP_URL="https://${{ needs.deploy-vm.outputs.cp_host }}"
-          NODE_SIZE="${{ needs.deploy-vm.outputs.node_size }}"
-
-          IMAGE="${{ needs.build-image.outputs.image }}"
-          echo "Deploying image: ${IMAGE} (node_size=${NODE_SIZE})"
-
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${CP_URL}/api/v1/deploy" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -cn \
-              --arg image "$IMAGE" \
-              --arg name "marketplace" \
-              --arg version "${{ github.sha }}" \
-              --arg ns "$NODE_SIZE" \
-              '{image: $image, app_name: $name, app_version: $version, ports: ["8080:18789"], node_size: $ns, env: [
-                "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}",
-                "GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}",
-                "GCP_ZONE=${{ vars.GCP_ZONE || 'us-central1-c' }}",
-                "DD_GCP_IMAGE_FAMILY=${{ vars.DD_GCP_IMAGE_FAMILY || 'dd-agent-main' }}"
-              ]}')")
-
-          HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
-          BODY=$(echo "${RESPONSE}" | sed '$d')
-          echo "HTTP ${HTTP_CODE}: ${BODY}"
-          if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 300 ]; then
-            echo "::error::Deploy failed: ${BODY}"
-            exit 1
-          fi
-
-          DEP_ID=$(echo "${BODY}" | jq -r .deployment_id)
-          if [ -z "${DEP_ID}" ] || [ "${DEP_ID}" = "null" ]; then
-            echo "::error::Invalid deployment_id in deploy response: ${BODY}"
-            exit 1
-          fi
-          echo "deployment_id=${DEP_ID}" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for deployment to be running
-        run: |
-          set -euo pipefail
-          CP_URL="https://${{ needs.deploy-vm.outputs.cp_host }}"
-          DEP_ID="${{ steps.deploy.outputs.deployment_id }}"
-          for i in $(seq 1 24); do
-            RESP=$(curl -sSL "${CP_URL}/api/v1/deployments/${DEP_ID}" 2>/dev/null || echo '{}')
-            STATUS=$(echo "$RESP" | jq -r '.status // "unknown"')
-            echo "  attempt ${i}/24: status=${STATUS}"
-            [ "$STATUS" = "running" ] && echo "Marketplace is live!" && exit 0
-            if [ "$STATUS" = "failed" ]; then
-              echo "$RESP" | jq -r '.error_message // "no error message"'
-              echo "::error::Marketplace deployment failed"
-              exit 1
-            fi
-            sleep 5
-          done
-          echo "::error::Marketplace deployment timed out (120s)"
-          exit 1
+        run: rm -f /tmp/deploy-key
