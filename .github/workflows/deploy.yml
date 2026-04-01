@@ -137,16 +137,16 @@ jobs:
           # Start dd-agent with:
           # - OpenClaw as primary boot workload (with OpenRouter key + register access)
           # - signal-cli as second workload
-          $SSH "sudo DD_OWNER=devopsdefender \
+          $SSH "sudo bash -c 'DD_OWNER=devopsdefender \
             DD_ENV=${DD_ENV} \
             DD_REGISTER_URL=wss://${REGISTER_HOST}/register \
             DD_BOOT_IMAGE=${OPENCLAW_IMAGE} \
             DD_BOOT_APP=openclaw \
             DD_BOOT_TTY=true \
-            DD_BOOT_ENV='OPENROUTER_API_KEY=${OPENROUTER_API_KEY};DD_REGISTER_URL=wss://${REGISTER_HOST}/register;DD_SKILLS_DIR=/var/lib/dd/shared/skills' \
+            DD_BOOT_ENV=\"OPENROUTER_API_KEY=${OPENROUTER_API_KEY};DD_REGISTER_URL=wss://${REGISTER_HOST}/register;DD_SKILLS_DIR=/var/lib/dd/shared/skills\" \
             DD_BOOT_IMAGE_2=${SIGNAL_CLI_IMAGE} \
             DD_BOOT_APP_2=signal-cli \
-            nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &"
+            nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &'"
 
           echo "dd-agent started, registering with ${REGISTER_HOST}..."
           sleep 10
