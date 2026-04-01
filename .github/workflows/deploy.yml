@@ -123,16 +123,11 @@ jobs:
           # Stop existing dd-agent if running
           $SSH "sudo pkill dd-agent 2>/dev/null || true; sleep 2"
 
-          # Download dd-agent binary from DD releases
+          # Download dd-agent binary from DD releases (newest release, including pre-releases)
           $SSH "sudo curl -fsSL -o /usr/local/bin/dd-agent \
-            https://github.com/devopsdefender/dd/releases/latest/download/dd-agent \
-            && sudo chmod +x /usr/local/bin/dd-agent" || {
-            echo "::warning::Could not download from latest release, trying staging release"
-            $SSH "sudo curl -fsSL -o /usr/local/bin/dd-agent \
-              \$(curl -sf https://api.github.com/repos/devopsdefender/dd/releases | \
-                jq -r '.[0].assets[] | select(.name==\"dd-agent\") | .browser_download_url') \
-              && sudo chmod +x /usr/local/bin/dd-agent"
-          }
+            \$(curl -sf https://api.github.com/repos/devopsdefender/dd/releases | \
+              jq -r '.[0].assets[] | select(.name==\"dd-agent\") | .browser_download_url') \
+            && sudo chmod +x /usr/local/bin/dd-agent"
 
           # Download cloudflared
           $SSH "command -v cloudflared >/dev/null || sudo curl -fsSL -o /usr/local/bin/cloudflared \
