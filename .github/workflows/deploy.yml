@@ -151,8 +151,27 @@ jobs:
           echo "dd-agent started, registering with ${REGISTER_HOST}..."
           sleep 10
 
-          # Verify agent is running
-          $SSH "curl -fsS http://localhost:8080/health" || echo "::warning::Agent health check failed"
+          # Verify agent is running — fail fast if it crashed
+          for i in $(seq 1 6); do
+            if $SSH "curl -fsS http://localhost:8080/health" 2>/dev/null; then
+              echo "Agent healthy!"
+              break
+            fi
+            # Check if process died
+            if ! $SSH "pgrep -x dd-agent" >/dev/null 2>&1; then
+              echo "::error::dd-agent process died. Last 20 lines of log:"
+              $SSH "tail -20 /var/log/dd-agent.log 2>/dev/null" || true
+              exit 1
+            fi
+            echo "  waiting for agent... attempt ${i}/6"
+            sleep 5
+          done
+          # Final check
+          $SSH "curl -fsS http://localhost:8080/health" || {
+            echo "::error::Agent not healthy after 40s. Log tail:"
+            $SSH "tail -20 /var/log/dd-agent.log 2>/dev/null" || true
+            exit 1
+          }
 
       - name: Verify marketplace is live
         env:
