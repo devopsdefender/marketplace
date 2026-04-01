@@ -6,17 +6,25 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deploy target"
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
 
 concurrency:
-  group: marketplace-staging
+  group: marketplace-${{ inputs.environment || 'staging' }}
   cancel-in-progress: true
 
 permissions:
-  id-token: write
   contents: read
   packages: write
 
 env:
+  DD_ENV: ${{ inputs.environment || 'staging' }}
   DD_DOMAIN: ${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}
 
 jobs:
@@ -42,52 +50,93 @@ jobs:
   deploy:
     needs: build-apps
     runs-on: ubuntu-latest
-    environment: staging
+    environment: ${{ inputs.environment || 'staging' }}
     steps:
-      - name: Fetch dd CLI
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Resolve environment
+        id: env
         run: |
-          mkdir -p /tmp/dd-bin
-          gh release download --repo devopsdefender/dd --pattern 'dd-agent' --dir /tmp/dd-bin 2>/dev/null \
-            || gh release download --repo devopsdefender/dd --pattern 'dd' --dir /tmp/dd-bin 2>/dev/null \
-            || true
-          # dd CLI is the dd-agent binary with different subcommands
-          if [ -f /tmp/dd-bin/dd-agent ]; then
-            cp /tmp/dd-bin/dd-agent /tmp/dd-bin/dd
+          if [ "$DD_ENV" = "production" ]; then
+            echo "ssh_host=162.222.34.121" >> "$GITHUB_OUTPUT"
+            echo "ssh_user=tdx2" >> "$GITHUB_OUTPUT"
+            echo "register_host=app.${DD_DOMAIN}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ssh_host=57.130.10.246" >> "$GITHUB_OUTPUT"
+            echo "ssh_user=ubuntu" >> "$GITHUB_OUTPUT"
+            echo "register_host=app-staging.${DD_DOMAIN}" >> "$GITHUB_OUTPUT"
           fi
-          chmod +x /tmp/dd-bin/* 2>/dev/null || true
 
-      - name: Verify DD staging is healthy
+      - name: Set up SSH
         run: |
-          url="https://app-staging.${DD_DOMAIN}"
-          for i in $(seq 1 12); do
-            health=$(curl -fsS "${url}/health" 2>/dev/null) && break
-            echo "  waiting for staging... attempt ${i}/12"
-            sleep 5
-          done
-          echo "DD staging: $health"
-          echo "$health" | jq -e '.ok == true' > /dev/null
-          echo "✓ DD staging healthy"
+          mkdir -p ~/.ssh
+          echo "${{ secrets.BAREMETAL_SSH_KEY }}" > /tmp/deploy-key
+          chmod 600 /tmp/deploy-key
+          ssh-keyscan -H ${{ steps.env.outputs.ssh_host }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Deploy OpenClaw
+      - name: Deploy dd-agent to baremetal host
+        env:
+          SSH_HOST: ${{ steps.env.outputs.ssh_host }}
+          SSH_USER: ${{ steps.env.outputs.ssh_user }}
+          REGISTER_HOST: ${{ steps.env.outputs.register_host }}
+          OPENCLAW_IMAGE: ${{ needs.build-apps.outputs.openclaw_image }}
         run: |
           set -euo pipefail
-          AGENT="app-staging.${DD_DOMAIN}"
-          IMAGE="${{ needs.build-apps.outputs.openclaw_image }}"
+          SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
 
-          echo "Deploying ${IMAGE} to ${AGENT}..."
+          echo "Deploying to ${SSH_HOST} (${DD_ENV})..."
 
-          # Deploy via dd CLI (Noise over WebSocket)
-          if [ -f /tmp/dd-bin/dd ]; then
-            /tmp/dd-bin/dd deploy --to "${AGENT}" --image "${IMAGE}" --app-name openclaw 2>&1 || true
-          else
-            echo "::warning::dd CLI not available, skipping deploy"
-          fi
+          # Stop existing dd-agent if running
+          $SSH "sudo pkill dd-agent 2>/dev/null || true; sleep 2"
+
+          # Download dd-agent binary from DD releases
+          $SSH "sudo curl -fsSL -o /usr/local/bin/dd-agent \
+            https://github.com/devopsdefender/dd/releases/latest/download/dd-agent \
+            && sudo chmod +x /usr/local/bin/dd-agent" || {
+            echo "::warning::Could not download from latest release, trying staging release"
+            $SSH "sudo curl -fsSL -o /usr/local/bin/dd-agent \
+              \$(curl -sf https://api.github.com/repos/devopsdefender/dd/releases | \
+                jq -r '.[0].assets[] | select(.name==\"dd-agent\") | .browser_download_url') \
+              && sudo chmod +x /usr/local/bin/dd-agent"
+          }
+
+          # Download cloudflared
+          $SSH "command -v cloudflared >/dev/null || sudo curl -fsSL -o /usr/local/bin/cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            && sudo chmod +x /usr/local/bin/cloudflared"
+
+          # Start dd-agent with registration pointing to DD register service
+          $SSH "sudo DD_OWNER=devopsdefender \
+            DD_ENV=${DD_ENV} \
+            DD_REGISTER_URL=wss://${REGISTER_HOST}/register \
+            DD_BOOT_IMAGE=${OPENCLAW_IMAGE} \
+            DD_BOOT_APP=openclaw \
+            nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &"
+
+          echo "dd-agent started, registering with ${REGISTER_HOST}..."
+          sleep 10
+
+          # Verify agent is running
+          $SSH "curl -fsS http://localhost:8080/health" || echo "::warning::Agent health check failed"
+
+      - name: Verify agent registered with DD
+        run: |
+          REGISTER_HOST="${{ steps.env.outputs.register_host }}"
+          for i in $(seq 1 12); do
+            health=$(curl -fsS "https://${REGISTER_HOST}/health" 2>/dev/null) || true
+            if [ -n "$health" ]; then
+              echo "DD register healthy: $health"
+              break
+            fi
+            echo "  waiting for register... attempt ${i}/12"
+            sleep 5
+          done
 
           echo ""
           echo "═══════════════════════════════════════"
-          echo "  Marketplace deployed"
-          echo "  Fleet: https://app-staging.${DD_DOMAIN}/"
-          echo "  Terminal: https://app-staging.${DD_DOMAIN}/session/openclaw"
+          echo "  Marketplace deployed (${DD_ENV})"
+          echo "  Fleet: https://${REGISTER_HOST}/"
+          echo "  Agent should appear in fleet dashboard"
           echo "═══════════════════════════════════════"
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f /tmp/deploy-key
