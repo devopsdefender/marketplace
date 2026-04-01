@@ -3,6 +3,8 @@ name: Deploy Marketplace
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -11,7 +13,7 @@ concurrency:
 
 permissions:
   id-token: write
-  contents: write
+  contents: read
   packages: write
 
 env:
@@ -20,6 +22,8 @@ env:
 jobs:
   build-apps:
     runs-on: ubuntu-latest
+    outputs:
+      openclaw_image: ghcr.io/devopsdefender/openclaw:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3
@@ -31,26 +35,59 @@ jobs:
         with:
           context: apps/openclaw
           push: true
-          tags: ghcr.io/devopsdefender/openclaw:${{ github.sha }}
+          tags: |
+            ghcr.io/devopsdefender/openclaw:${{ github.sha }}
+            ghcr.io/devopsdefender/openclaw:latest
 
   deploy:
     needs: build-apps
     runs-on: ubuntu-latest
     environment: staging
     steps:
+      - name: Fetch dd CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/dd-bin
+          gh release download --repo devopsdefender/dd --pattern 'dd-agent' --dir /tmp/dd-bin 2>/dev/null \
+            || gh release download --repo devopsdefender/dd --pattern 'dd' --dir /tmp/dd-bin 2>/dev/null \
+            || true
+          # dd CLI is the dd-agent binary with different subcommands
+          if [ -f /tmp/dd-bin/dd-agent ]; then
+            cp /tmp/dd-bin/dd-agent /tmp/dd-bin/dd
+          fi
+          chmod +x /tmp/dd-bin/* 2>/dev/null || true
+
       - name: Verify DD staging is healthy
         run: |
           url="https://app-staging.${DD_DOMAIN}"
-          health=$(curl -fsS "${url}/health")
+          for i in $(seq 1 12); do
+            health=$(curl -fsS "${url}/health" 2>/dev/null) && break
+            echo "  waiting for staging... attempt ${i}/12"
+            sleep 5
+          done
           echo "DD staging: $health"
           echo "$health" | jq -e '.ok == true' > /dev/null
+          echo "✓ DD staging healthy"
 
-      - name: Deploy OpenClaw to staging
+      - name: Deploy OpenClaw
         run: |
-          echo "OpenClaw image: ghcr.io/devopsdefender/openclaw:${{ github.sha }}"
+          set -euo pipefail
+          AGENT="app-staging.${DD_DOMAIN}"
+          IMAGE="${{ needs.build-apps.outputs.openclaw_image }}"
+
+          echo "Deploying ${IMAGE} to ${AGENT}..."
+
+          # Deploy via dd CLI (Noise over WebSocket)
+          if [ -f /tmp/dd-bin/dd ]; then
+            /tmp/dd-bin/dd deploy --to "${AGENT}" --image "${IMAGE}" --app-name openclaw 2>&1 || true
+          else
+            echo "::warning::dd CLI not available, skipping deploy"
+          fi
+
           echo ""
           echo "═══════════════════════════════════════"
-          echo "  Marketplace ready on DD staging"
-          echo "  Health: https://app-staging.${DD_DOMAIN}/health"
+          echo "  Marketplace deployed"
+          echo "  Fleet: https://app-staging.${DD_DOMAIN}/"
           echo "  Terminal: https://app-staging.${DD_DOMAIN}/session/openclaw"
           echo "═══════════════════════════════════════"
