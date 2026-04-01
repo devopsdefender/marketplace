@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       openclaw_image: ghcr.io/devopsdefender/openclaw:${{ github.sha }}
+      signal_cli_image: ghcr.io/devopsdefender/signal-cli:latest
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3
@@ -39,6 +40,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build OpenClaw (tagged per commit)
       - uses: docker/build-push-action@v6
         with:
           context: apps/openclaw
@@ -47,11 +50,20 @@ jobs:
             ghcr.io/devopsdefender/openclaw:${{ github.sha }}
             ghcr.io/devopsdefender/openclaw:latest
 
+      # Build signal-cli
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/signal-cli
+          push: true
+          tags: ghcr.io/devopsdefender/signal-cli:latest
+
   deploy:
     needs: build-apps
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment || 'staging' }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Resolve environment
         id: env
         run: |
@@ -72,12 +84,36 @@ jobs:
           chmod 600 /tmp/deploy-key
           ssh-keyscan -H ${{ steps.env.outputs.ssh_host }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Deploy dd-agent to baremetal host
+      - name: Copy skills to host
+        env:
+          SSH_HOST: ${{ steps.env.outputs.ssh_host }}
+          SSH_USER: ${{ steps.env.outputs.ssh_user }}
+        run: |
+          set -euo pipefail
+          SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
+          SCP="scp -i /tmp/deploy-key -o StrictHostKeyChecking=no"
+
+          # Create shared skills directory
+          $SSH "sudo mkdir -p /var/lib/dd/shared/skills && sudo chmod -R 777 /var/lib/dd/shared"
+
+          # Copy skills files
+          $SCP config/skills/*.md "${SSH_USER}@${SSH_HOST}:/var/lib/dd/shared/skills/"
+
+          # Copy VM provisioning script
+          $SSH "sudo mkdir -p /usr/local/bin"
+          $SCP scripts/dd-vm.sh "${SSH_USER}@${SSH_HOST}:/tmp/dd-vm.sh"
+          $SSH "sudo mv /tmp/dd-vm.sh /usr/local/bin/dd-vm.sh && sudo chmod +x /usr/local/bin/dd-vm.sh"
+
+          echo "Skills and scripts deployed"
+
+      - name: Deploy dd-agent with marketplace workloads
         env:
           SSH_HOST: ${{ steps.env.outputs.ssh_host }}
           SSH_USER: ${{ steps.env.outputs.ssh_user }}
           REGISTER_HOST: ${{ steps.env.outputs.register_host }}
           OPENCLAW_IMAGE: ${{ needs.build-apps.outputs.openclaw_image }}
+          SIGNAL_CLI_IMAGE: ${{ needs.build-apps.outputs.signal_cli_image }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set -euo pipefail
           SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
@@ -87,28 +123,29 @@ jobs:
           # Stop existing dd-agent if running
           $SSH "sudo pkill dd-agent 2>/dev/null || true; sleep 2"
 
-          # Download dd-agent binary from DD releases
+          # Download dd-agent binary from DD releases (newest release, including pre-releases)
           $SSH "sudo curl -fsSL -o /usr/local/bin/dd-agent \
-            https://github.com/devopsdefender/dd/releases/latest/download/dd-agent \
-            && sudo chmod +x /usr/local/bin/dd-agent" || {
-            echo "::warning::Could not download from latest release, trying staging release"
-            $SSH "sudo curl -fsSL -o /usr/local/bin/dd-agent \
-              \$(curl -sf https://api.github.com/repos/devopsdefender/dd/releases | \
-                jq -r '.[0].assets[] | select(.name==\"dd-agent\") | .browser_download_url') \
-              && sudo chmod +x /usr/local/bin/dd-agent"
-          }
+            \$(curl -sf https://api.github.com/repos/devopsdefender/dd/releases | \
+              jq -r '.[0].assets[] | select(.name==\"dd-agent\") | .browser_download_url') \
+            && sudo chmod +x /usr/local/bin/dd-agent"
 
           # Download cloudflared
           $SSH "command -v cloudflared >/dev/null || sudo curl -fsSL -o /usr/local/bin/cloudflared \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
             && sudo chmod +x /usr/local/bin/cloudflared"
 
-          # Start dd-agent with registration pointing to DD register service
+          # Start dd-agent with:
+          # - OpenClaw as primary boot workload (with OpenRouter key + register access)
+          # - signal-cli as second workload
           $SSH "sudo DD_OWNER=devopsdefender \
             DD_ENV=${DD_ENV} \
             DD_REGISTER_URL=wss://${REGISTER_HOST}/register \
             DD_BOOT_IMAGE=${OPENCLAW_IMAGE} \
             DD_BOOT_APP=openclaw \
+            DD_BOOT_TTY=true \
+            DD_BOOT_ENV='OPENROUTER_API_KEY=${OPENROUTER_API_KEY};DD_REGISTER_URL=wss://${REGISTER_HOST}/register;DD_SKILLS_DIR=/var/lib/dd/shared/skills' \
+            DD_BOOT_IMAGE_2=${SIGNAL_CLI_IMAGE} \
+            DD_BOOT_APP_2=signal-cli \
             nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &"
 
           echo "dd-agent started, registering with ${REGISTER_HOST}..."
@@ -117,9 +154,16 @@ jobs:
           # Verify agent is running
           $SSH "curl -fsS http://localhost:8080/health" || echo "::warning::Agent health check failed"
 
-      - name: Verify agent registered with DD
+      - name: Verify marketplace is live
+        env:
+          REGISTER_HOST: ${{ steps.env.outputs.register_host }}
+          SSH_HOST: ${{ steps.env.outputs.ssh_host }}
+          SSH_USER: ${{ steps.env.outputs.ssh_user }}
         run: |
-          REGISTER_HOST="${{ steps.env.outputs.register_host }}"
+          set -euo pipefail
+          SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
+
+          # Check agent registered with DD fleet
           for i in $(seq 1 12); do
             health=$(curl -fsS "https://${REGISTER_HOST}/health" 2>/dev/null) || true
             if [ -n "$health" ]; then
@@ -130,11 +174,18 @@ jobs:
             sleep 5
           done
 
+          # Check workload count
+          deps=$($SSH "curl -fsS http://localhost:8080/deployments" 2>/dev/null) || deps="[]"
+          dep_count=$(echo "$deps" | jq 'length')
+          echo "Deployments: $dep_count"
+          echo "$deps" | jq -r '.[] | "  [\(.app_name)] \(.status) (pid: \(.pid // "n/a"))"'
+
           echo ""
           echo "═══════════════════════════════════════"
           echo "  Marketplace deployed (${DD_ENV})"
           echo "  Fleet: https://${REGISTER_HOST}/"
-          echo "  Agent should appear in fleet dashboard"
+          echo "  Workloads: ${dep_count}"
+          echo "  Skills: /var/lib/dd/shared/skills/"
           echo "═══════════════════════════════════════"
 
       - name: Cleanup SSH key
