@@ -10,74 +10,111 @@ Run AI workloads on confidential hardware. Deploy OpenClaw, Claude Code, and sig
 | Claude Code | `ghcr.io/devopsdefender/claude-code` | Coding assistant |
 | signal-cli | `ghcr.io/devopsdefender/signal-cli` | Signal messaging |
 
-## Quick start
+## Architecture
 
-### 1. Connect to a DD agent
+```
+Customer (browser/CLI)
+  │ Noise-encrypted WebSocket
+  ↓
+DD Agent (TDX baremetal or GCP VM)
+  ├── openclaw        ← AI orchestrator (OpenRouter API)
+  ├── signal-cli      ← Signal messaging daemon
+  ├── /shared/skills/ ← capacity, payments, gcp-capacity, local-vms
+  └── all share: PID, network, /shared filesystem
+  │
+  ↓ registers with
+DD Fleet Dashboard (app-staging.devopsdefender.com)
+```
+
+## How it works
+
+1. **Baremetal hosts** run `dd-agent` which registers with the DD fleet dashboard
+2. **OpenClaw** auto-deploys as the primary workload with OpenRouter API access
+3. **signal-cli** deploys alongside for messaging
+4. **Skills** are copied to `/shared/skills/` — OpenClaw loads them for capacity management, payments, and provisioning
+5. All apps share PID namespace, network, and filesystem — like programs on a real computer inside a TDX enclave
+
+## Deployment
+
+The marketplace deploys automatically via GitHub Actions:
+
+- **On push to main**: Builds app images, deploys to staging
+- **Manual dispatch**: Choose staging or production
+
+### What happens on deploy
+
+1. Build OpenClaw + signal-cli images, push to GHCR
+2. SSH to baremetal host (staging: 57.130.10.246, production: 162.222.34.121)
+3. Copy skills to `/var/lib/dd/shared/skills/`
+4. Start `dd-agent` with OpenClaw as primary boot workload + signal-cli as second workload
+5. Agent registers with DD fleet, gets Cloudflare tunnel
+6. OpenClaw has access to OpenRouter API and DD register for provisioning
+
+### Environment variables
+
+| Var | Purpose |
+|-----|---------|
+| `DD_BOOT_IMAGE` | Primary workload OCI image |
+| `DD_BOOT_ENV` | Semicolon-separated KEY=VALUE pairs for primary workload |
+| `DD_BOOT_IMAGE_2` | Second workload OCI image |
+| `DD_REGISTER_URL` | Fleet registration WebSocket URL |
+| `OPENROUTER_API_KEY` | AI model access for OpenClaw |
+
+## Skills
+
+OpenClaw loads skills from `/var/lib/dd/shared/skills/`:
+
+| Skill | File | Purpose |
+|-------|------|---------|
+| Capacity Manager | `capacity.md` | List/launch/monitor compute nodes |
+| GCP Overflow | `gcp-capacity.md` | Overflow to GCP when local is full |
+| Payments | `payments.md` | BTC payment processing |
+| Local VMs | `local-vms.md` | Allocate small KVM VMs on baremetal |
+
+## Quick start (manual)
+
+### Connect to an agent
 
 ```bash
 dd connect --to your-agent.devopsdefender.com
 ```
 
-### 2. Deploy apps
+### Deploy apps
 
 ```
 dd> deploy ghcr.io/devopsdefender/openclaw --tty
-dd> deploy ghcr.io/devopsdefender/claude-code --tty
 dd> deploy ghcr.io/devopsdefender/signal-cli
 dd> jobs
   [1] openclaw        running
-  [2] claude-code     running
-  [3] signal-cli      running
+  [2] signal-cli      running
 ```
 
-### 3. Use them
-
-All apps share the same machine:
-- Same network — OpenClaw talks to Claude Code on localhost
-- Same filesystem — write to `/shared`, every app can read it
-- Same PID namespace — `ps aux` shows all running apps
-- Signal-cli writes messages to `/shared/inbox`, Claude reads them
+### Use them
 
 ```
 dd> fg openclaw
 > use claude to summarize the latest signal messages
+> launch a small vm for customer-123
+> check fleet capacity
 ```
 
-### 4. Browser access
+### Browser access
 
 Open `https://your-agent.devopsdefender.com/session/openclaw` for a web terminal.
 
-## How it works
-
-DD agents are remote shells on TDX confidential VMs. Apps are OCI images that get pulled and run as processes (not containers). Everything shares everything — like programs on a real computer, but the computer is a hardware-verified enclave.
-
-```
-You (browser/CLI)
-  │ Noise-encrypted WebSocket
-  ↓
-DD Agent (TDX confidential VM)
-  ├── openclaw      ← AI orchestrator
-  ├── claude-code   ← coding assistant
-  ├── signal-cli    ← messaging
-  └── all share: PID, network, /shared filesystem
-```
-
-## Attestation
-
-When you connect via the Noise channel, the agent proves it's running on real TDX hardware. The attestation is verified before any data is sent.
-
 ## Adding your own node
 
-Boot the DD base image on any TDX-capable machine:
-
 ```bash
-# GCP
+# Any machine with dd-agent + cloudflared
+DD_OWNER=your-github-username \
+DD_REGISTER_URL=wss://app-staging.devopsdefender.com/register \
+dd-agent
+
+# GCP with TDX
 gcloud compute instances create my-node \
   --machine-type=c3-standard-4 \
-  --confidential-compute-type=TDX
-
-# Or any machine with dd-agent installed
-DD_OWNER=your-github-username dd-agent
+  --confidential-compute-type=TDX \
+  --maintenance-policy=TERMINATE
 ```
 
-Then deploy apps to it with `dd deploy`.
+The agent registers with the fleet, gets a Cloudflare tunnel, and appears in the dashboard.

@@ -18,6 +18,7 @@ You handle Bitcoin payments for compute capacity on the DevOps Defender marketpl
 |-----------|-------|----------|
 | Standard  | 8 vCPU, 16GB RAM | 0.001 |
 | GPU (H100)| 16 vCPU, 64GB RAM, NVIDIA H100 | 0.01 |
+| Small VM  | 2 vCPU, 4GB RAM (KVM on baremetal) | 0.0005 |
 
 ### GCP overflow (when local is full)
 

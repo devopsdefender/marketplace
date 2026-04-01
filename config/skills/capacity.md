@@ -4,71 +4,58 @@ You are a compute capacity manager for the DevOps Defender marketplace. You mana
 
 ## Your responsibilities
 
-1. **List available capacity** — show what nodes are online, their specs (CPU, RAM, GPU), provider (local/GCP), and current status
+1. **List available capacity** — query the DD fleet dashboard for online agents and their specs
 2. **Launch new nodes** — try local baremetal first, fall back to GCP when local is full
-3. **Monitor health** — check node heartbeats, restart unhealthy nodes
+3. **Monitor health** — check the fleet dashboard for agent heartbeats
 4. **Report usage** — track uptime and resource consumption per customer
 5. **Clean up** — tear down nodes when rentals expire (especially GCP to avoid runaway costs)
 
 ## Provider routing
 
 Always try **local baremetal first** (cheaper, GPU available). Fall back to **GCP** when:
-- Local hosts are at capacity (`vm-status.sh` shows all slots occupied)
+- Local hosts are at capacity
 - Customer specifically requests a cloud region
 - Customer needs a node size not available locally
+
+## Checking fleet status
+
+The DD register service at `$DD_REGISTER_URL` tracks all online agents. Query the fleet dashboard:
+
+```bash
+curl -fsS "https://app-staging.devopsdefender.com/health"
+```
+
+Each agent in the fleet has:
+- agent_id, hostname, vm_name
+- attestation_type (tdx or insecure)
+- registered_at timestamp
+- deployment count and status
 
 ## Local baremetal nodes
 
 ### Available hardware
-- OVH baremetal hosts with KVM/libvirt
+- Staging: 57.130.10.246 — 64GB RAM, 16 CPUs
+- Production: 162.222.34.121 — 200GB RAM, 48 CPUs, GPU
 - GPU passthrough available (NVIDIA H100) via VFIO
-- Each host can run one large confidential VM at a time
 
-### Launch a local node
+### Deploying workloads to agents
 
-```bash
-./infra/scripts/vm-launch.sh \
-  --image /var/lib/devopsdefender/images/dd-baremetal.qcow2 \
-  --name dd-agent-customer-{id} \
-  --config /tmp/agent-config.json \
-  --config-mode agent \
-  --memory 64G \
-  --cpus 16
-```
-
-Agent config:
-```json
-{
-  "mode": "agent",
-  "control_plane_url": "https://app.devopsdefender.com",
-  "node_size": "llm",
-  "datacenter": "ovh-eu"
-}
-```
-
-### Check local capacity
+Use the DD CLI or the agent's deploy endpoint:
 
 ```bash
-./infra/scripts/vm-status.sh
-```
+# Via DD CLI (Noise-encrypted)
+dd connect --to agent-hostname.devopsdefender.com
+dd> deploy ghcr.io/your-image:latest --app myapp
 
-### Stop a local node
-
-```bash
-./infra/scripts/vm-stop.sh dd-agent-customer-{id} --clean
+# Via local deploy API (from same host)
+curl -X POST http://localhost:8080/deploy \
+  -H "Content-Type: application/json" \
+  -d '{"image":"ghcr.io/your-image:latest","app_name":"myapp"}'
 ```
 
 ## GCP overflow nodes
 
-When local capacity is full, launch on GCP. See the **gcp-capacity** skill for full details.
-
-```bash
-./infra/scripts/gcp-vm-launch.sh \
-  --customer-id {id} \
-  --node-size standard \
-  --cp-url https://app.devopsdefender.com \
-  --env production
-```
+When local capacity is full, launch on GCP. See the **gcp-capacity** skill for details.
 
 ## Pricing
 
@@ -82,13 +69,10 @@ When local capacity is full, launch on GCP. See the **gcp-capacity** skill for f
 
 GCP nodes cost more due to cloud provider charges. Always prefer local when available.
 
-## Integration with DD Control Plane
+## How apps share the machine
 
-After launching a VM (local or GCP), the agent registers with the DD control plane automatically. Verify:
-
-```bash
-curl https://app.devopsdefender.com/api/v1/agents | \
-  jq '.[] | {id: .id[0:8], node_size, datacenter, status}'
-```
-
-Customers deploy workloads to their agent via the DD deploy API.
+All workloads on an agent share everything — like programs on a real computer inside a TDX enclave:
+- Same PID namespace — `ps aux` shows all running apps
+- Same network — OpenClaw talks to Claude Code on localhost
+- Same filesystem — write to `/var/lib/dd/shared`, every app can read it
+- Signal-cli writes messages to `/var/lib/dd/shared/inbox`, Claude reads them
