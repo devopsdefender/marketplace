@@ -72,8 +72,8 @@ jobs:
             echo "ssh_user=tdx2" >> "$GITHUB_OUTPUT"
             echo "register_host=app.${DD_DOMAIN}" >> "$GITHUB_OUTPUT"
           else
-            echo "ssh_host=57.130.10.246" >> "$GITHUB_OUTPUT"
-            echo "ssh_user=ubuntu" >> "$GITHUB_OUTPUT"
+            echo "ssh_host=162.222.34.121" >> "$GITHUB_OUTPUT"
+            echo "ssh_user=tdx2" >> "$GITHUB_OUTPUT"
             echo "register_host=app-staging.${DD_DOMAIN}" >> "$GITHUB_OUTPUT"
           fi
 
