@@ -114,10 +114,10 @@ jobs:
           local-hostname: ${VM_NAME}
           METADATA
 
-          # Build cloud-init ISO and copy to host
+          # Copy cloud-init files to host and build ISO there
           SEED_ISO="/var/lib/libvirt/images/${VM_NAME}-seed.iso"
-          cd /tmp && genisoimage -output seed.iso -volid cidata -joliet -rock user-data meta-data
-          $SCP /tmp/seed.iso "${SSH_USER}@${SSH_HOST}:${SEED_ISO}"
+          $SCP /tmp/user-data /tmp/meta-data "${SSH_USER}@${SSH_HOST}:/tmp/"
+          $SSH "cd /tmp && sudo genisoimage -output ${SEED_ISO} -volid cidata -joliet -rock user-data meta-data"
 
           # Launch VM with cloud-init ISO attached as cdrom
           $SSH "sudo virt-install \
