@@ -100,8 +100,8 @@ jobs:
           DISK="/var/lib/libvirt/images/${VM_NAME}.qcow2"
           $SSH "sudo qemu-img create -f qcow2 -b ${BASE_IMAGE} -F qcow2 ${DISK} 80G"
 
-          # Generate cloud-init userdata
-          cat > /tmp/userdata.yaml <<USERDATA
+          # Generate cloud-init files (filenames must be exactly user-data and meta-data)
+          cat > /tmp/user-data <<USERDATA
           #cloud-config
           runcmd:
             - curl -fsSL -o /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared
@@ -109,19 +109,27 @@ jobs:
             - DD_OWNER=devopsdefender DD_ENV=production DD_REGISTER_URL=wss://${REGISTER_HOST}/register DD_BOOT_IMAGE=${OPENCLAW_IMAGE} DD_BOOT_APP=openclaw DD_BOOT_TTY=true DD_BOOT_ENV="OPENROUTER_API_KEY=${OPENROUTER_API_KEY};DD_REGISTER_URL=wss://${REGISTER_HOST}/register" DD_BOOT_IMAGE_2=${SIGNAL_CLI_IMAGE} DD_BOOT_APP_2=signal-cli nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
           USERDATA
 
-          $SCP /tmp/userdata.yaml "${SSH_USER}@${SSH_HOST}:/tmp/userdata.yaml"
+          cat > /tmp/meta-data <<METADATA
+          instance-id: ${VM_NAME}
+          local-hostname: ${VM_NAME}
+          METADATA
 
-          # Launch VM
+          # Build cloud-init ISO and copy to host
+          SEED_ISO="/var/lib/libvirt/images/${VM_NAME}-seed.iso"
+          cd /tmp && genisoimage -output seed.iso -volid cidata -joliet -rock user-data meta-data
+          $SCP /tmp/seed.iso "${SSH_USER}@${SSH_HOST}:${SEED_ISO}"
+
+          # Launch VM with cloud-init ISO attached as cdrom
           $SSH "sudo virt-install \
             --name ${VM_NAME} \
             --ram 8192 \
             --vcpus 4 \
             --disk path=${DISK},format=qcow2 \
+            --disk path=${SEED_ISO},device=cdrom \
             --os-variant ubuntu24.04 \
             --network bridge=virbr0 \
             --graphics none \
             --console pty,target_type=serial \
-            --cloud-init user-data=/tmp/userdata.yaml \
             --import \
             --noautoconsole"
 
@@ -131,7 +139,6 @@ jobs:
         run: |
           set -euo pipefail
           SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
-          REGISTER_HOST="app.${DD_DOMAIN}"
 
           # Verify VM is running
           $SSH "sudo virsh dominfo ${VM_NAME}" || {
@@ -139,11 +146,21 @@ jobs:
             exit 1
           }
 
-          # Wait for agent health via CF tunnel
+          # Get VM IP from DHCP lease
+          for i in $(seq 1 12); do
+            VM_IP=$($SSH "sudo virsh net-dhcp-leases default" | grep "${VM_NAME}" | awk '{print $5}' | cut -d/ -f1)
+            [ -n "$VM_IP" ] && break
+            echo "  waiting for VM IP... attempt ${i}/12"
+            sleep 5
+          done
+          [ -z "$VM_IP" ] && { echo "::error::VM did not get an IP address"; exit 1; }
+          echo "VM IP: ${VM_IP}"
+
+          # Wait for dd-agent health inside VM
           for i in $(seq 1 60); do
-            health=$(curl -fsS "https://${REGISTER_HOST}/health" 2>/dev/null) || true
+            health=$($SSH "curl -fsS http://${VM_IP}:8080/health" 2>/dev/null) || true
             if [ -n "$health" ]; then
-              echo "Agent healthy via CF tunnel: $health"
+              echo "Agent healthy: $health"
               break
             fi
             if [ "$i" -eq 60 ]; then
@@ -157,10 +174,9 @@ jobs:
           echo ""
           echo "═══════════════════════════════════════"
           echo "  Marketplace production deployed"
-          echo "  Fleet: https://${REGISTER_HOST}/"
-          echo "  VM: ${VM_NAME}"
+          echo "  VM: ${VM_NAME} (${VM_IP})"
           echo "═══════════════════════════════════════"
 
       - name: Cleanup SSH key
         if: always()
-        run: rm -f /tmp/deploy-key /tmp/userdata.yaml
+        run: rm -f /tmp/deploy-key /tmp/user-data /tmp/meta-data /tmp/seed.iso
