@@ -1,0 +1,166 @@
+name: Production Deploy
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: marketplace-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  DD_ENV: production
+  DD_DOMAIN: ${{ vars.DD_CF_DOMAIN || 'devopsdefender.com' }}
+  VM_NAME: dd-vm-production
+  SSH_HOST: 162.222.34.121
+  SSH_USER: tdx2
+  BASE_IMAGE: /var/lib/libvirt/images/ubuntu-24.04-cloudimg-amd64.img
+  BASE_IMAGE_URL: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+
+jobs:
+  build-apps:
+    runs-on: ubuntu-latest
+    outputs:
+      openclaw_image: ghcr.io/devopsdefender/openclaw:${{ github.sha }}
+      signal_cli_image: ghcr.io/devopsdefender/signal-cli:latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/openclaw
+          push: true
+          tags: |
+            ghcr.io/devopsdefender/openclaw:${{ github.sha }}
+            ghcr.io/devopsdefender/openclaw:latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/signal-cli
+          push: true
+          tags: ghcr.io/devopsdefender/signal-cli:latest
+
+  deploy:
+    needs: build-apps
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.BAREMETAL_SSH_KEY }}" > /tmp/deploy-key
+          chmod 600 /tmp/deploy-key
+          ssh-keyscan -H ${SSH_HOST} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Resolve dd-agent binary URL
+        id: dd
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url=$(curl -sf https://api.github.com/repos/devopsdefender/dd/releases \
+            | jq -r '[.[] | select(.tag_name | startswith("prod-"))][0].assets[] | select(.name=="dd-agent") | .browser_download_url')
+          if [ -z "$url" ] || [ "$url" = "null" ]; then
+            echo "::error::No production dd-agent release found"
+            exit 1
+          fi
+          echo "binary_url=${url}" >> "$GITHUB_OUTPUT"
+          echo "Using dd-agent: ${url}"
+
+      - name: Destroy old VM
+        run: |
+          SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
+          $SSH "sudo virsh destroy ${VM_NAME} 2>/dev/null; sudo virsh undefine ${VM_NAME} --remove-all-storage 2>/dev/null" || true
+
+      - name: Create VM
+        env:
+          OPENCLAW_IMAGE: ${{ needs.build-apps.outputs.openclaw_image }}
+          SIGNAL_CLI_IMAGE: ${{ needs.build-apps.outputs.signal_cli_image }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DD_AGENT_URL: ${{ steps.dd.outputs.binary_url }}
+        run: |
+          set -euo pipefail
+          SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
+          SCP="scp -i /tmp/deploy-key -o StrictHostKeyChecking=no"
+          REGISTER_HOST="app.${DD_DOMAIN}"
+
+          # Ensure base image is cached on host
+          $SSH "test -f ${BASE_IMAGE} || sudo curl -fsSL -o ${BASE_IMAGE} ${BASE_IMAGE_URL}"
+
+          # Create disk backed by cloud image
+          DISK="/var/lib/libvirt/images/${VM_NAME}.qcow2"
+          $SSH "sudo qemu-img create -f qcow2 -b ${BASE_IMAGE} -F qcow2 ${DISK} 80G"
+
+          # Generate cloud-init userdata
+          cat > /tmp/userdata.yaml <<USERDATA
+          #cloud-config
+          runcmd:
+            - curl -fsSL -o /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared
+            - curl -fsSL -o /usr/local/bin/dd-agent ${DD_AGENT_URL} && chmod +x /usr/local/bin/dd-agent
+            - DD_OWNER=devopsdefender DD_ENV=production DD_REGISTER_URL=wss://${REGISTER_HOST}/register DD_BOOT_IMAGE=${OPENCLAW_IMAGE} DD_BOOT_APP=openclaw DD_BOOT_TTY=true DD_BOOT_ENV="OPENROUTER_API_KEY=${OPENROUTER_API_KEY};DD_REGISTER_URL=wss://${REGISTER_HOST}/register" DD_BOOT_IMAGE_2=${SIGNAL_CLI_IMAGE} DD_BOOT_APP_2=signal-cli nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
+          USERDATA
+
+          $SCP /tmp/userdata.yaml "${SSH_USER}@${SSH_HOST}:/tmp/userdata.yaml"
+
+          # Launch VM
+          $SSH "sudo virt-install \
+            --name ${VM_NAME} \
+            --ram 8192 \
+            --vcpus 4 \
+            --disk path=${DISK},format=qcow2 \
+            --os-variant ubuntu24.04 \
+            --network bridge=virbr0 \
+            --graphics none \
+            --console pty,target_type=serial \
+            --cloud-init user-data=/tmp/userdata.yaml \
+            --import \
+            --noautoconsole"
+
+          echo "VM ${VM_NAME} created"
+
+      - name: Verify marketplace is live
+        run: |
+          set -euo pipefail
+          SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
+          REGISTER_HOST="app.${DD_DOMAIN}"
+
+          # Verify VM is running
+          $SSH "sudo virsh dominfo ${VM_NAME}" || {
+            echo "::error::VM ${VM_NAME} is not running"
+            exit 1
+          }
+
+          # Wait for agent health via CF tunnel
+          for i in $(seq 1 60); do
+            health=$(curl -fsS "https://${REGISTER_HOST}/health" 2>/dev/null) || true
+            if [ -n "$health" ]; then
+              echo "Agent healthy via CF tunnel: $health"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Agent not healthy within 5 minutes"
+              exit 1
+            fi
+            echo "  waiting for agent... attempt ${i}/60"
+            sleep 5
+          done
+
+          echo ""
+          echo "═══════════════════════════════════════"
+          echo "  Marketplace production deployed"
+          echo "  Fleet: https://${REGISTER_HOST}/"
+          echo "  VM: ${VM_NAME}"
+          echo "═══════════════════════════════════════"
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f /tmp/deploy-key /tmp/userdata.yaml
