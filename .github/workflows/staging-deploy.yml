@@ -150,11 +150,12 @@ jobs:
             exit 1
           }
 
-          # Get VM IP from DHCP lease
-          for i in $(seq 1 12); do
-            VM_IP=$($SSH "sudo virsh net-dhcp-leases default" | grep "${VM_NAME}" | awk '{print $5}' | cut -d/ -f1)
+          # Get VM IP: match MAC address from VM definition against DHCP leases
+          VM_MAC=$($SSH "sudo virsh domiflist ${VM_NAME}" | awk '/virbr0/ {print \$5}')
+          for i in $(seq 1 24); do
+            VM_IP=$($SSH "sudo virsh net-dhcp-leases default" | grep "$VM_MAC" | awk '{print \$5}' | cut -d/ -f1)
             [ -n "$VM_IP" ] && break
-            echo "  waiting for VM IP... attempt ${i}/12"
+            echo "  waiting for VM IP... attempt ${i}/24"
             sleep 5
           done
           [ -z "$VM_IP" ] && { echo "::error::VM did not get an IP address"; exit 1; }
