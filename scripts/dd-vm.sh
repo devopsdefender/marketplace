@@ -22,7 +22,7 @@ usage() {
 Usage: dd-vm.sh <command> [options]
 
 Commands:
-  create  --name <name> --size <tiny|small|medium|large>
+  create  --name <name> --size <tiny|small|medium|large> [--env KEY=VALUE ...]
   list
   destroy --name <name>
   status  --name <name>
@@ -32,6 +32,9 @@ Sizes:
   small   2 vCPU,  4GB RAM,  40GB disk
   medium  4 vCPU,  8GB RAM,  80GB disk
   large   8 vCPU, 16GB RAM, 160GB disk
+
+Options:
+  --env KEY=VALUE  Extra environment variable for dd-agent (repeatable)
 
 Environment:
   DD_ENV           Environment (default: staging)
@@ -43,10 +46,12 @@ EOF
 
 cmd_create() {
     local name="" size=""
+    local -a extra_envs=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
             --size) size="$2"; shift 2 ;;
+            --env)  extra_envs+=("$2"); shift 2 ;;
             *) echo "Unknown option: $1"; usage ;;
         esac
     done
@@ -66,6 +71,12 @@ cmd_create() {
         exit 1
     fi
 
+    # Build env exports for the dd-agent start command
+    local env_line="DD_OWNER=${DD_OWNER} DD_ENV=${DD_ENV} DD_REGISTER_URL=${DD_REGISTER_URL}"
+    for e in "${extra_envs[@]}"; do
+        env_line+=" ${e}"
+    done
+
     # Generate cloud-init user data
     local userdata
     userdata=$(mktemp)
@@ -74,7 +85,7 @@ cmd_create() {
 runcmd:
   - curl -fsSL -o /usr/local/bin/dd-agent https://github.com/devopsdefender/dd/releases/latest/download/dd-agent && chmod +x /usr/local/bin/dd-agent
   - curl -fsSL -o /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared
-  - DD_OWNER=${DD_OWNER} DD_ENV=${DD_ENV} DD_REGISTER_URL=${DD_REGISTER_URL} nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
+  - ${env_line} nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
 USERDATA
 
     # Create disk
