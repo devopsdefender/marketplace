@@ -106,6 +106,7 @@ jobs:
           cat > /tmp/user-data <<USERDATA
           #cloud-config
           runcmd:
+            - apt-get update -q && apt-get install -y linux-modules-extra-\$(uname -r) && modprobe tdx_guest && modprobe tsm_report && mount -t configfs configfs /sys/kernel/config 2>/dev/null || true
             - curl -fsSL -o /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared
             - curl -fsSL -o /usr/local/bin/dd-agent ${DD_AGENT_URL} && chmod +x /usr/local/bin/dd-agent
             - DD_OWNER=devopsdefender DD_ENV=production DD_REGISTER_URL=wss://${REGISTER_HOST}/register DD_BOOT_IMAGE=${OPENCLAW_IMAGE} DD_BOOT_APP=openclaw DD_BOOT_TTY=true DD_BOOT_ENV="OPENROUTER_API_KEY=${OPENROUTER_API_KEY};DD_REGISTER_URL=wss://${REGISTER_HOST}/register" DD_BOOT_IMAGE_2=${SIGNAL_CLI_IMAGE} DD_BOOT_APP_2=signal-cli nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
@@ -121,17 +122,19 @@ jobs:
           $SCP /tmp/user-data /tmp/meta-data "${SSH_USER}@${SSH_HOST}:/tmp/"
           $SSH "cd /tmp && sudo genisoimage -output ${SEED_ISO} -volid cidata -joliet -rock user-data meta-data"
 
-          # Launch VM with cloud-init ISO attached as cdrom
+          # Launch TDX-protected VM with cloud-init ISO attached as cdrom
           $SSH "sudo virt-install \
             --name ${VM_NAME} \
             --ram 8192 \
             --vcpus 4 \
+            --machine q35 \
             --disk path=${DISK},format=qcow2 \
             --disk path=${SEED_ISO},device=cdrom \
             --os-variant ubuntu24.04 \
             --network bridge=virbr0 \
             --graphics none \
-            --console pty,target_type=serial \
+            --boot firmware=efi \
+            --launchSecurity type=tdx \
             --import \
             --noautoconsole"
 
