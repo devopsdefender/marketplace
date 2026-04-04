@@ -9,5 +9,12 @@
     "controlUi": {
       "dangerouslyAllowHostHeaderOriginFallback": true
     }
+  },
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://localhost:11434/v1"
+      }
+    }
   }
 }
