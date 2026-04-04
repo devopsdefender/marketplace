@@ -1,6 +1,6 @@
 # DD Marketplace
 
-Run AI workloads on confidential TDX hardware. Marketplace agents run OpenClaw via podman with a web terminal for management.
+Run OpenClaw on confidential TDX hardware with a local fallback model and optional GPU inference.
 
 ## Architecture
 
@@ -9,7 +9,8 @@ Customer (browser)
   │ GitHub OAuth / password auth
   ↓
 DD Agent (TDX VM on baremetal)
-  ├── podman: openclaw container (AI orchestrator, OpenRouter API)
+  ├── podman: openclaw + ollama (qwen2.5-coder:7b fallback)
+  ├── vLLM (production only — Qwen3-Coder-Next on H100)
   ├── bash shell (web terminal for management)
   └── cloudflared tunnel (public hostname)
   │
@@ -17,21 +18,30 @@ DD Agent (TDX VM on baremetal)
 DD Fleet Dashboard (app-staging.devopsdefender.com)
 ```
 
+## Environments
+
+| Environment | Model Backend | GPU | VM Sizing |
+|-------------|--------------|-----|-----------|
+| **Staging** | OpenRouter (ChatGPT) + ollama fallback | None | 8GB / 4 vCPU / 80GB |
+| **Production** | vLLM (Qwen3-Coder-Next on H100) + ollama fallback | H100 94GB (`0d:00.0`) | 64GB / 16 vCPU / 200GB |
+
 ## How it works
 
-1. **CI builds** the OpenClaw Docker image and pushes to GHCR
-2. **Deploy script** creates a TDX VM on the baremetal host via cloud-init
-3. **VM boots**, installs podman, starts OpenClaw container detached
-4. **dd-agent** starts with `DD_BOOT_CMD=bash` — web terminal gives a full VM shell
-5. **Agent registers** with the fleet dashboard, gets a Cloudflare Tunnel hostname
+1. **CI builds** the openclaw Docker image (includes ollama + qwen2.5-coder:7b) and pushes to GHCR
+2. **Deploy script** creates a TDX VM on baremetal via cloud-init
+3. **VM boots**, installs podman, optionally installs vLLM + NVIDIA drivers (production)
+4. **OpenClaw container** starts detached with model providers configured
+5. **dd-agent** starts with `DD_BOOT_CMD=bash` — web terminal for management
+6. **Agent registers** with the fleet dashboard, gets a Cloudflare Tunnel hostname
 
-Users connect via the dashboard terminal and can run `podman logs openclaw`, `podman exec -it openclaw sh`, `ps aux`, etc.
+## App
 
-## Apps
+Single container: `ghcr.io/devopsdefender/openclaw`
 
-| App | Image | Description |
-|-----|-------|-------------|
-| OpenClaw | `ghcr.io/devopsdefender/openclaw` | AI orchestrator with skills and OpenRouter API access |
+Includes:
+- OpenClaw gateway
+- Ollama with qwen2.5-coder:7b (fallback model, always available)
+- Entrypoint starts ollama in background, then openclaw
 
 ## Deployment
 
@@ -39,41 +49,23 @@ Deploys automatically via GitHub Actions:
 - **PR to main** → staging deploy
 - **Push to main** → production deploy
 
-### What happens on deploy
-
-1. Build OpenClaw image, push to GHCR
-2. SSH to baremetal host
-3. Create TDX VM with cloud-init (`scripts/vm-startup.sh`)
-4. VM installs podman, starts OpenClaw container, starts dd-agent with bash shell
-5. Agent registers with fleet, gets Cloudflare tunnel
-
 ### Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/vm-startup.sh` | Runs inside the VM at boot — installs podman, configures OpenClaw, starts dd-agent |
+| `scripts/vm-startup.sh` | Runs inside VM — installs podman, optionally vLLM, starts openclaw + dd-agent |
 | `scripts/deploy-vm.sh` | Called by CI — creates disk, generates cloud-init, launches TDX VM |
-| `scripts/dd-vm.sh` | Manual VM management (create/list/destroy KVM VMs) |
+| `scripts/dd-vm.sh` | Manual VM management (create/list/destroy) |
 
 ### VM sizing
-
-Set via environment variables in the deploy workflow:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VM_RAM` | 8192 | RAM in MB |
 | `VM_VCPUS` | 4 | vCPU count |
 | `VM_DISK` | 80 | Disk in GB |
-| `VM_GPU` | (empty) | PCI address for GPU passthrough (e.g. `0d:00.0`) |
-
-### Environment variables
-
-| Var | Purpose |
-|-----|---------|
-| `DD_BOOT_CMD` | Shell command for dd-agent (default: `bash`) |
-| `DD_REGISTER_URL` | Fleet registration WebSocket URL |
-| `OPENCLAW_IMAGE` | Container image for OpenClaw |
-| `OPENROUTER_API_KEY` | AI model access for OpenClaw |
+| `VM_GPU` | (empty) | PCI address for GPU passthrough |
+| `VLLM_MODEL` | (empty) | HuggingFace model ID for local inference |
 
 ## Skills
 
@@ -86,17 +78,13 @@ OpenClaw loads skills from `/var/lib/dd/shared/skills/`:
 | Payments | `payments.md` | BTC payment processing |
 | Local VMs | `local-vms.md` | Allocate KVM VMs on baremetal |
 
-## Browser access
+## Web terminal
 
-Open `https://your-agent.devopsdefender.com/session/shell` for a web terminal on the VM.
-
-## Adding your own node
+Connect via `https://your-agent.devopsdefender.com/session/shell` for a VM shell. From there:
 
 ```bash
-DD_OWNER=your-github-username \
-DD_REGISTER_URL=wss://app-staging.devopsdefender.com/register \
-DD_BOOT_CMD=bash \
-dd-agent
+podman logs openclaw          # view openclaw output
+podman exec -it openclaw sh   # shell into the container
+nvidia-smi                    # check GPU (production)
+curl localhost:8000/v1/models # check vLLM models (production)
 ```
-
-The agent registers with the fleet, gets a Cloudflare tunnel, and appears in the dashboard.
