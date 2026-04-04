@@ -1,6 +1,6 @@
 #!/bin/bash
 # vm-startup.sh — Runs inside the marketplace VM at boot via cloud-init.
-# Installs deps, optionally starts vLLM for local inference, and starts dd-agent.
+# Installs deps, starts dd-agent immediately, then sets up openclaw + ollama.
 #
 # Required env vars (set by cloud-init):
 #   DD_AGENT_URL        — URL to download dd-agent binary
@@ -16,7 +16,7 @@ set -euo pipefail
 
 echo "dd-marketplace: starting VM setup"
 
-# ── Install packages ─────────────────────────────────────────────────────
+# ── Install core packages ────────────────────────────────────────────────
 apt-get update -q
 apt-get install -y podman
 
@@ -34,7 +34,17 @@ chmod +x /usr/local/bin/cloudflared
 curl -fsSL -o /usr/local/bin/dd-agent "${DD_AGENT_URL}"
 chmod +x /usr/local/bin/dd-agent
 
-# ── Install ollama (fallback model) ─────────────────────────────────────
+# ── Start dd-agent FIRST (so health checks pass while rest installs) ─────
+DD_OWNER="${DD_OWNER}" \
+DD_ENV="${DD_ENV}" \
+DD_REGISTER_URL="${DD_REGISTER_URL}" \
+DD_BOOT_CMD=bash \
+DD_BOOT_APP=shell \
+nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
+
+echo "dd-marketplace: dd-agent started"
+
+# ── Install ollama (fallback model) ──────────────────────────────────────
 curl -fsSL -o /usr/local/bin/ollama https://ollama.com/download/ollama-linux-amd64
 chmod +x /usr/local/bin/ollama
 
@@ -68,7 +78,7 @@ fi
 mkdir -p /etc/openclaw
 
 if [ -n "${VLLM_MODEL:-}" ]; then
-  # Production: vLLM on H100 is primary, OpenRouter is fallback
+  # Production: vLLM on H100 primary, ollama fallback
   cat > /etc/openclaw/openclaw.json <<'CONF'
 {
   "gateway": {
@@ -86,7 +96,7 @@ if [ -n "${VLLM_MODEL:-}" ]; then
 }
 CONF
 else
-  # Staging: OpenRouter is primary, ollama (tiny model) is fallback
+  # Staging: OpenRouter primary, ollama fallback
   cat > /etc/openclaw/openclaw.json <<'CONF'
 {
   "gateway": {
@@ -104,22 +114,11 @@ else
 CONF
 fi
 
-# ── Start openclaw container (detached) ──────────────────────────────────
-# Use upstream image directly, mount config, use host network for ollama/vLLM access
+# ── Start openclaw container ─────────────────────────────────────────────
 podman run -d --name openclaw \
   --network host \
   -v /etc/openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:ro \
   -e OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
   "${OPENCLAW_IMAGE}"
-
-echo "dd-marketplace: openclaw container started"
-
-# ── Start dd-agent with a shell ──────────────────────────────────────────
-DD_OWNER="${DD_OWNER}" \
-DD_ENV="${DD_ENV}" \
-DD_REGISTER_URL="${DD_REGISTER_URL}" \
-DD_BOOT_CMD=bash \
-DD_BOOT_APP=shell \
-nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
 
 echo "dd-marketplace: setup complete"
