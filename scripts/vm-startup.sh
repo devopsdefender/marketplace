@@ -50,6 +50,14 @@ cat > /etc/openclaw/openclaw.json <<'CONF'
     "bind": "lan",
     "auth": { "mode": "token", "token": "dd-marketplace" },
     "controlUi": { "dangerouslyAllowHostHeaderOriginFallback": true }
+  },
+  "models": {
+    "providers": {
+      "openrouter": {
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKey": { "source": "env", "provider": "default", "id": "OPENROUTER_API_KEY" }
+      }
+    }
   }
 }
 CONF
