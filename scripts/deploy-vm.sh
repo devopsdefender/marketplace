@@ -18,7 +18,6 @@
 #   VM_VCPUS            — vCPU count (default: 4)
 #   VM_DISK             — Disk in GB (default: 80)
 #   VM_GPU              — PCI address for GPU passthrough (e.g. "0d:00.0"), empty = no GPU
-#   VLLM_MODEL          — HuggingFace model ID for local inference (e.g. "Qwen/Qwen3-Coder-Next")
 set -euo pipefail
 
 VM_RAM="${VM_RAM:-8192}"
@@ -55,7 +54,7 @@ write_files:
 $(sed 's/^/      /' "${SCRIPT_DIR}/vm-startup.sh")
 
 runcmd:
-  - DD_AGENT_URL=${DD_AGENT_URL} DD_OWNER=devopsdefender DD_ENV=${DD_ENV} DD_REGISTER_URL=wss://${REGISTER_HOST}/register OPENCLAW_IMAGE=${OPENCLAW_IMAGE} OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-} VLLM_MODEL=${VLLM_MODEL:-} /opt/dd/startup.sh
+  - DD_AGENT_URL=${DD_AGENT_URL} DD_OWNER=devopsdefender DD_ENV=${DD_ENV} DD_REGISTER_URL=wss://${REGISTER_HOST}/register OPENCLAW_IMAGE=${OPENCLAW_IMAGE} OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-} /opt/dd/startup.sh
 USERDATA
 
 cat > /tmp/meta-data <<METADATA
