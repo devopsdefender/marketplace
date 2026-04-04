@@ -21,6 +21,7 @@ env:
   BASE_IMAGE: /var/lib/libvirt/images/ubuntu-24.04-cloudimg-amd64.img
   BASE_IMAGE_URL: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
   OPENCLAW_IMAGE: ghcr.io/openclaw/openclaw:latest
+  OLLAMA_MODEL: "qwen2.5-coder:1.5b"
 
 jobs:
   deploy:

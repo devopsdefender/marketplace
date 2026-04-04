@@ -54,7 +54,7 @@ write_files:
 $(sed 's/^/      /' "${SCRIPT_DIR}/vm-startup.sh")
 
 runcmd:
-  - DD_AGENT_URL=${DD_AGENT_URL} DD_OWNER=devopsdefender DD_ENV=${DD_ENV} DD_REGISTER_URL=wss://${REGISTER_HOST}/register OPENCLAW_IMAGE=${OPENCLAW_IMAGE} OPENAI_API_KEY=${OPENAI_API_KEY:-} /opt/dd/startup.sh
+  - DD_AGENT_URL=${DD_AGENT_URL} DD_OWNER=devopsdefender DD_ENV=${DD_ENV} DD_REGISTER_URL=wss://${REGISTER_HOST}/register OPENCLAW_IMAGE=${OPENCLAW_IMAGE} OPENAI_API_KEY=${OPENAI_API_KEY:-} OLLAMA_MODEL=${OLLAMA_MODEL:-} VM_GPU=${VM_GPU:-} /opt/dd/startup.sh
 USERDATA
 
 cat > /tmp/meta-data <<METADATA
