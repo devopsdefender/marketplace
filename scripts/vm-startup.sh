@@ -42,23 +42,37 @@ nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
 echo "dd-marketplace: dd-agent started"
 
 # ── Write openclaw config ────────────────────────────────────────────────
-mkdir -p /etc/openclaw
-cat > /etc/openclaw/openclaw.json <<'CONF'
+mkdir -p /var/lib/openclaw
+cat > /var/lib/openclaw/openclaw.json <<'CONF'
 {
   "gateway": {
     "mode": "local",
     "bind": "lan",
     "auth": { "mode": "token", "token": "dd-marketplace" },
     "controlUi": { "dangerouslyAllowHostHeaderOriginFallback": true }
+  },
+  "models": {
+    "providers": {
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
+        "models": [
+          { "id": "gpt-5.4", "name": "GPT-5.4", "api": "openai-responses" },
+          { "id": "gpt-5.4-mini", "name": "GPT-5.4 Mini", "api": "openai-responses" },
+          { "id": "gpt-4o", "name": "GPT-4o", "api": "openai-responses" }
+        ]
+      }
+    }
   }
 }
 CONF
+chown -R 1000:1000 /var/lib/openclaw
 
 # ── Start openclaw ───────────────────────────────────────────────────────
 podman run -d --name openclaw \
+  --restart unless-stopped \
   --network host \
-  -v /etc/openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:ro \
-  -e OPENROUTER_API_KEY="${OPENROUTER_API_KEY}" \
+  -v /var/lib/openclaw:/home/node/.openclaw \
+  -e OPENAI_API_KEY="${OPENAI_API_KEY}" \
   "${OPENCLAW_IMAGE}"
 
 echo "dd-marketplace: setup complete"
