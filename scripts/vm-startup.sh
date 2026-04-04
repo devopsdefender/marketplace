@@ -55,7 +55,11 @@ cat > /etc/openclaw/openclaw.json <<'CONF'
     "providers": {
       "openrouter": {
         "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": { "source": "env", "provider": "default", "id": "OPENROUTER_API_KEY" }
+        "models": [
+          { "id": "openai/gpt-4o", "name": "GPT-4o", "api": "openai-responses" },
+          { "id": "openai/gpt-4o-mini", "name": "GPT-4o Mini", "api": "openai-responses" },
+          { "id": "anthropic/claude-sonnet-4", "name": "Claude Sonnet", "api": "openai-responses" }
+        ]
       }
     }
   }
