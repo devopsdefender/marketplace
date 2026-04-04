@@ -106,10 +106,11 @@ jobs:
           cat > /tmp/user-data <<USERDATA
           #cloud-config
           runcmd:
-            - apt-get update -q && apt-get install -y linux-modules-extra-\$(uname -r) && modprobe tdx_guest && modprobe tsm_report && mount -t configfs configfs /sys/kernel/config 2>/dev/null || true
+            - apt-get update -q && apt-get install -y podman linux-modules-extra-\$(uname -r) && modprobe tdx_guest && modprobe tsm_report && mount -t configfs configfs /sys/kernel/config 2>/dev/null || true
             - curl -fsSL -o /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared
             - curl -fsSL -o /usr/local/bin/dd-agent ${DD_AGENT_URL} && chmod +x /usr/local/bin/dd-agent
-            - DD_OWNER=devopsdefender DD_ENV=production DD_REGISTER_URL=wss://${REGISTER_HOST}/register DD_BOOT_IMAGE=${OPENCLAW_IMAGE} DD_BOOT_APP=openclaw DD_BOOT_TTY=true DD_BOOT_ENV="OPENROUTER_API_KEY=${OPENROUTER_API_KEY};DD_REGISTER_URL=wss://${REGISTER_HOST}/register" DD_BOOT_IMAGE_2=${SIGNAL_CLI_IMAGE} DD_BOOT_APP_2=signal-cli nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
+            - mkdir -p /etc/openclaw && echo '{"gateway":{"mode":"local","bind":"lan","auth":{"mode":"token","token":"dd-marketplace"},"controlUi":{"dangerouslyAllowHostHeaderOriginFallback":true}}}' > /etc/openclaw/openclaw.json
+            - DD_OWNER=devopsdefender DD_ENV=production DD_REGISTER_URL=wss://${REGISTER_HOST}/register DD_BOOT_CMD="podman run --rm --name openclaw -p 18789:18789 -v /etc/openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:ro -e OPENROUTER_API_KEY=${OPENROUTER_API_KEY} ${OPENCLAW_IMAGE}" DD_BOOT_APP=openclaw nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
           USERDATA
 
           cat > /tmp/meta-data <<METADATA
