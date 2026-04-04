@@ -12,7 +12,18 @@
 #   DD_DOMAIN           — Domain (e.g. devopsdefender.com)
 #   OPENCLAW_IMAGE      — Container image for openclaw
 #   OPENROUTER_API_KEY  — OpenClaw LLM API key
+#
+# Optional env vars:
+#   VM_RAM              — RAM in MB (default: 8192)
+#   VM_VCPUS            — vCPU count (default: 4)
+#   VM_DISK             — Disk in GB (default: 80)
+#   VM_GPU              — PCI address for GPU passthrough (e.g. "0d:00.0"), empty = no GPU
 set -euo pipefail
+
+VM_RAM="${VM_RAM:-8192}"
+VM_VCPUS="${VM_VCPUS:-4}"
+VM_DISK="${VM_DISK:-80}"
+VM_GPU="${VM_GPU:-}"
 
 SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
 SCP="scp -i /tmp/deploy-key -o StrictHostKeyChecking=no"
@@ -27,7 +38,7 @@ $SSH "test -f ${BASE_IMAGE} || sudo curl -fsSL -o ${BASE_IMAGE} ${BASE_IMAGE_URL
 
 # ── Create disk ──────────────────────────────────────────────────────────
 DISK="/var/lib/libvirt/images/${VM_NAME}.qcow2"
-$SSH "sudo qemu-img create -f qcow2 -b ${BASE_IMAGE} -F qcow2 ${DISK} 80G"
+$SSH "sudo qemu-img create -f qcow2 -b ${BASE_IMAGE} -F qcow2 ${DISK} ${VM_DISK}G"
 
 # ── Generate cloud-init ──────────────────────────────────────────────────
 # The startup script is fetched from the repo and run with env vars.
@@ -56,10 +67,15 @@ SEED_ISO="/var/lib/libvirt/images/${VM_NAME}-seed.iso"
 $SCP /tmp/user-data /tmp/meta-data "${SSH_USER}@${SSH_HOST}:/tmp/"
 $SSH "cd /tmp && sudo genisoimage -output ${SEED_ISO} -volid cidata -joliet -rock user-data meta-data"
 
+GPU_FLAG=""
+if [ -n "${VM_GPU}" ]; then
+  GPU_FLAG="--host-device ${VM_GPU}"
+fi
+
 $SSH "sudo virt-install \
   --name ${VM_NAME} \
-  --ram 8192 \
-  --vcpus 4 \
+  --ram ${VM_RAM} \
+  --vcpus ${VM_VCPUS} \
   --machine q35 \
   --disk path=${DISK},format=qcow2 \
   --disk path=${SEED_ISO},device=cdrom \
@@ -68,6 +84,7 @@ $SSH "sudo virt-install \
   --graphics none \
   --boot firmware=efi \
   --launchSecurity type=tdx \
+  ${GPU_FLAG} \
   --import \
   --noautoconsole"
 
