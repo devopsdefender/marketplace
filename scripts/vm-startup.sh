@@ -53,12 +53,12 @@ cat > /var/lib/openclaw/openclaw.json <<'CONF'
   },
   "models": {
     "providers": {
-      "openrouter": {
-        "baseUrl": "https://openrouter.ai/api/v1",
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
         "models": [
-          { "id": "openai/gpt-4o", "name": "GPT-4o", "api": "openai-responses" },
-          { "id": "openai/gpt-4o-mini", "name": "GPT-4o Mini", "api": "openai-responses" },
-          { "id": "anthropic/claude-sonnet-4", "name": "Claude Sonnet", "api": "openai-responses" }
+          { "id": "gpt-5.4", "name": "GPT-5.4", "api": "openai-responses" },
+          { "id": "gpt-5.4-mini", "name": "GPT-5.4 Mini", "api": "openai-responses" },
+          { "id": "gpt-4o", "name": "GPT-4o", "api": "openai-responses" }
         ]
       }
     }
@@ -72,7 +72,7 @@ podman run -d --name openclaw \
   --restart unless-stopped \
   --network host \
   -v /var/lib/openclaw:/home/node/.openclaw \
-  -e OPENROUTER_API_KEY="${OPENROUTER_API_KEY}" \
+  -e OPENAI_API_KEY="${OPENAI_API_KEY}" \
   "${OPENCLAW_IMAGE}"
 
 echo "dd-marketplace: setup complete"
