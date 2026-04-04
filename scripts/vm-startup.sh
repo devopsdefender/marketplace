@@ -15,7 +15,7 @@ echo "dd-marketplace: starting VM setup"
 
 # ── Install packages ─────────────────────────────────────────────────────
 apt-get update -q
-apt-get install -y podman tmux
+apt-get install -y podman
 
 # TDX attestation modules (optional, fails gracefully on non-TDX VMs)
 apt-get install -y "linux-modules-extra-$(uname -r)" 2>/dev/null || true
@@ -49,20 +49,23 @@ cat > /etc/openclaw/openclaw.json <<'CONF'
 }
 CONF
 
-# ── Start dd-agent ───────────────────────────────────────────────────────
-# Boot command: tmux session running openclaw via podman.
-# When users connect via the dashboard terminal, they attach to this session.
-BOOT_CMD="tmux new-session -s openclaw 'podman run --rm --name openclaw \
+# ── Start openclaw container (detached) ──────────────────────────────────
+podman run -d --name openclaw \
   -p 18789:18789 \
   -v /etc/openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:ro \
-  -e OPENROUTER_API_KEY=${OPENROUTER_API_KEY} \
-  ${OPENCLAW_IMAGE}'"
+  -e OPENROUTER_API_KEY="${OPENROUTER_API_KEY}" \
+  "${OPENCLAW_IMAGE}"
 
+echo "dd-marketplace: openclaw container started"
+
+# ── Start dd-agent with a shell ──────────────────────────────────────────
+# The web terminal gives users a full VM shell where they can run ps,
+# podman logs openclaw, podman exec openclaw sh, etc.
 DD_OWNER="${DD_OWNER}" \
 DD_ENV="${DD_ENV}" \
 DD_REGISTER_URL="${DD_REGISTER_URL}" \
-DD_BOOT_CMD="${BOOT_CMD}" \
-DD_BOOT_APP=openclaw \
+DD_BOOT_CMD=bash \
+DD_BOOT_APP=shell \
 nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
 
 echo "dd-marketplace: setup complete"
