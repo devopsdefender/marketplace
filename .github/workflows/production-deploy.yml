@@ -11,7 +11,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   DD_ENV: production
@@ -21,6 +20,7 @@ env:
   SSH_USER: tdx2
   BASE_IMAGE: /var/lib/libvirt/images/ubuntu-24.04-cloudimg-amd64.img
   BASE_IMAGE_URL: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+  OPENCLAW_IMAGE: ghcr.io/openclaw/openclaw:latest
   # H100 GPU passthrough + sizing for local model inference
   VM_RAM: "65536"
   VM_VCPUS: "16"
@@ -29,27 +29,7 @@ env:
   VLLM_MODEL: "Qwen/Qwen3-Coder-Next"
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    outputs:
-      openclaw_image: ghcr.io/devopsdefender/openclaw:${{ github.sha }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: apps/openclaw
-          push: true
-          tags: |
-            ghcr.io/devopsdefender/openclaw:${{ github.sha }}
-            ghcr.io/devopsdefender/openclaw:latest
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -83,7 +63,6 @@ jobs:
 
       - name: Create VM
         env:
-          OPENCLAW_IMAGE: ${{ needs.build.outputs.openclaw_image }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           DD_AGENT_URL: ${{ steps.dd.outputs.binary_url }}
         run: scripts/deploy-vm.sh
@@ -125,7 +104,6 @@ jobs:
           echo ""
           echo "═══════════════════════════════════════"
           echo "  Marketplace production deployed"
-          echo "  VM: ${VM_NAME} (${VM_IP})"
           echo "═══════════════════════════════════════"
 
       - name: Cleanup SSH key

@@ -7,7 +7,7 @@
 #   DD_OWNER            — Owner label (e.g. "devopsdefender")
 #   DD_ENV              — Environment (staging/production)
 #   DD_REGISTER_URL     — Fleet registration WebSocket URL
-#   OPENCLAW_IMAGE      — Container image (e.g. ghcr.io/devopsdefender/openclaw:latest)
+#   OPENCLAW_IMAGE      — Container image (e.g. ghcr.io/openclaw/openclaw:latest)
 #   OPENROUTER_API_KEY  — API key for OpenClaw's LLM backend (staging)
 #
 # Optional env vars:
@@ -34,22 +34,28 @@ chmod +x /usr/local/bin/cloudflared
 curl -fsSL -o /usr/local/bin/dd-agent "${DD_AGENT_URL}"
 chmod +x /usr/local/bin/dd-agent
 
+# ── Install ollama (fallback model) ─────────────────────────────────────
+curl -fsSL -o /usr/local/bin/ollama https://ollama.com/download/ollama-linux-amd64
+chmod +x /usr/local/bin/ollama
+
+ollama serve &
+sleep 3
+ollama pull qwen2.5-coder:7b
+echo "dd-marketplace: ollama ready (fallback: qwen2.5-coder:7b)"
+
 # ── Local model inference (production with GPU) ──────────────────────────
 if [ -n "${VLLM_MODEL:-}" ]; then
   echo "dd-marketplace: setting up vLLM with ${VLLM_MODEL}"
 
-  # Install NVIDIA drivers and Python
   apt-get install -y nvidia-driver-560 python3-pip
   pip3 install vllm --break-system-packages
 
-  # Start vLLM
   nohup vllm serve "${VLLM_MODEL}" \
     --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.9 \
     --port 8000 \
     > /var/log/vllm.log 2>&1 &
 
-  # Wait for vLLM to be ready (model loading can take a few minutes)
   echo "dd-marketplace: waiting for vLLM to load model..."
   for i in $(seq 1 120); do
     curl -s http://localhost:8000/health >/dev/null 2>&1 && break
@@ -58,16 +64,54 @@ if [ -n "${VLLM_MODEL:-}" ]; then
   echo "dd-marketplace: vLLM ready"
 fi
 
-# ── Start openclaw container (detached) ──────────────────────────────────
-PODMAN_ARGS="-d --name openclaw -p 18789:18789"
-PODMAN_ARGS="${PODMAN_ARGS} -e OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}"
+# ── Write openclaw config ────────────────────────────────────────────────
+mkdir -p /etc/openclaw
 
-# If vLLM is running, openclaw can reach it via host network
 if [ -n "${VLLM_MODEL:-}" ]; then
-  PODMAN_ARGS="${PODMAN_ARGS} --network host"
+  # Production: vLLM on H100 is primary, OpenRouter is fallback
+  cat > /etc/openclaw/openclaw.json <<'CONF'
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "auth": { "mode": "token", "token": "dd-marketplace" },
+    "controlUi": { "dangerouslyAllowHostHeaderOriginFallback": true }
+  },
+  "models": {
+    "providers": {
+      "local": { "baseUrl": "http://localhost:8000/v1" },
+      "ollama": { "baseUrl": "http://localhost:11434/v1" }
+    }
+  }
+}
+CONF
+else
+  # Staging: OpenRouter is primary, ollama (tiny model) is fallback
+  cat > /etc/openclaw/openclaw.json <<'CONF'
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "auth": { "mode": "token", "token": "dd-marketplace" },
+    "controlUi": { "dangerouslyAllowHostHeaderOriginFallback": true }
+  },
+  "models": {
+    "providers": {
+      "ollama": { "baseUrl": "http://localhost:11434/v1" }
+    }
+  }
+}
+CONF
 fi
 
-podman run ${PODMAN_ARGS} "${OPENCLAW_IMAGE}"
+# ── Start openclaw container (detached) ──────────────────────────────────
+# Use upstream image directly, mount config, use host network for ollama/vLLM access
+podman run -d --name openclaw \
+  --network host \
+  -v /etc/openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:ro \
+  -e OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
+  "${OPENCLAW_IMAGE}"
+
 echo "dd-marketplace: openclaw container started"
 
 # ── Start dd-agent with a shell ──────────────────────────────────────────
