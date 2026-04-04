@@ -55,9 +55,15 @@ cat > /etc/openclaw/openclaw.json <<'CONF'
 CONF
 
 # ── Start openclaw ───────────────────────────────────────────────────────
+# Writable state dir so openclaw can create identity/ etc.
+mkdir -p /var/lib/openclaw
+cp /etc/openclaw/openclaw.json /var/lib/openclaw/openclaw.json
+chown -R 1000:1000 /var/lib/openclaw
+
 podman run -d --name openclaw \
+  --restart unless-stopped \
   --network host \
-  -v /etc/openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:ro \
+  -v /var/lib/openclaw:/home/node/.openclaw \
   -e OPENROUTER_API_KEY="${OPENROUTER_API_KEY}" \
   "${OPENCLAW_IMAGE}"
 
