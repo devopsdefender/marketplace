@@ -59,7 +59,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DD_AGENT_URL: ${{ steps.dd.outputs.binary_url }}
-        run: scripts/deploy-vm.sh
+        run: scripts/deploy-staging.sh
 
       - name: Verify marketplace is live
         run: |
