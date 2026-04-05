@@ -26,7 +26,7 @@ curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x
   -o /tmp/cuda-keyring.deb
 dpkg -i /tmp/cuda-keyring.deb
 apt-get update -q
-apt-get install -y nvidia-driver-560 nvidia-container-toolkit
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nvidia-driver-560 nvidia-container-toolkit
 nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 
 # ── Install binaries ─────────────────────────────────────────────────────
