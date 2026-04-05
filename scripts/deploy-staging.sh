@@ -21,7 +21,7 @@ write_files:
 $(sed 's/^/      /' "${SCRIPT_DIR}/vm-startup-staging.sh")
 
 runcmd:
-  - DD_AGENT_URL=${DD_AGENT_URL} DD_OWNER=devopsdefender DD_ENV=staging DD_REGISTER_URL=wss://${REGISTER_HOST}/register DD_PASSWORD=${DD_PASSWORD} OPENCLAW_IMAGE=${OPENCLAW_IMAGE} OPENAI_API_KEY=${OPENAI_API_KEY:-} /opt/dd/startup.sh
+  - DD_AGENT_URL=${DD_AGENT_URL} DD_OWNER=devopsdefender DD_ENV=staging DD_REGISTER_URL=wss://${REGISTER_HOST}/register DD_PASSWORD=${DD_PASSWORD} /opt/dd/startup.sh
 USERDATA
 
 cat > /tmp/meta-data <<METADATA
