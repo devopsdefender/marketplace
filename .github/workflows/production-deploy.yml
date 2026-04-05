@@ -3,6 +3,9 @@ name: Production Deploy
 on:
   push:
     branches: [main]
+    paths:
+      - "scripts/*production*"
+      - ".github/workflows/production-deploy.yml"
   workflow_dispatch:
 
 concurrency:

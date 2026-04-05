@@ -3,6 +3,9 @@ name: Staging Deploy
 on:
   pull_request:
     branches: [main]
+    paths:
+      - "scripts/*staging*"
+      - ".github/workflows/staging-deploy.yml"
   workflow_dispatch:
 
 concurrency:
