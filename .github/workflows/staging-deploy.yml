@@ -60,12 +60,12 @@ jobs:
 
       - name: Create VM
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DD_PASSWORD: ${{ secrets.DD_PASSWORD }}
           DD_AGENT_URL: ${{ steps.dd.outputs.binary_url }}
         run: scripts/deploy-staging.sh
 
-      - name: Verify marketplace is live
+      - name: Wait for agent
+        id: vm
         run: |
           set -euo pipefail
           SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
@@ -84,6 +84,7 @@ jobs:
           done
           [ -z "$VM_IP" ] && { echo "::error::VM did not get an IP address"; exit 1; }
           echo "VM IP: ${VM_IP}"
+          echo "vm_ip=${VM_IP}" >> "$GITHUB_OUTPUT"
 
           for i in $(seq 1 60); do
             health=$($SSH "curl -fsS http://${VM_IP}:8080/health" 2>/dev/null) || true
@@ -98,6 +99,88 @@ jobs:
             echo "  waiting for agent... attempt ${i}/60"
             sleep 5
           done
+
+          # Check agent registered with fleet
+          REGISTER_URL="https://app-staging.${DD_DOMAIN}/health"
+          echo "Checking fleet register at ${REGISTER_URL}..."
+          fleet_health=$(curl -fsS "$REGISTER_URL" 2>/dev/null) || true
+          echo "Fleet: $fleet_health"
+
+      - name: Deploy and configure openclaw
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DD_PASSWORD: ${{ secrets.DD_PASSWORD }}
+        run: |
+          set -euo pipefail
+          SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
+          VM_IP="${{ steps.vm.outputs.vm_ip }}"
+          API="http://${VM_IP}:8080"
+          AUTH="Authorization: Bearer ${DD_PASSWORD}"
+
+          # Deploy openclaw container
+          echo "Deploying openclaw..."
+          $SSH "curl -fsS -X POST ${API}/deploy \
+            -H 'Content-Type: application/json' \
+            -H '${AUTH}' \
+            -d '{
+              \"image\": \"${OPENCLAW_IMAGE}\",
+              \"app_name\": \"openclaw\",
+              \"env\": [\"OPENAI_API_KEY=${OPENAI_API_KEY:-}\"]
+            }'"
+          echo "openclaw deploy requested"
+
+          # Wait for openclaw container to be ready
+          echo "Waiting for openclaw container..."
+          for i in $(seq 1 60); do
+            result=$($SSH "curl -fsS -X POST ${API}/exec \
+              -H 'Content-Type: application/json' \
+              -H '${AUTH}' \
+              -d '{\"cmd\":[\"podman\",\"exec\",\"openclaw\",\"echo\",\"ready\"]}'" 2>/dev/null) || true
+            if echo "$result" | grep -q '"exit_code":0'; then
+              echo "openclaw container ready"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::openclaw container not ready within 5 minutes"
+              exit 1
+            fi
+            echo "  waiting... attempt ${i}/60"
+            sleep 5
+          done
+
+          # Configure openclaw
+          echo "Configuring openclaw..."
+          exec_cmd() {
+            $SSH "curl -fsS -X POST ${API}/exec \
+              -H 'Content-Type: application/json' \
+              -H '${AUTH}' \
+              -d '{\"cmd\":$1}'"
+          }
+
+          exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.mode","local"]'
+          exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.bind","lan"]'
+          exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.auth.mode","token"]'
+          exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.auth.token","dd-marketplace"]'
+          exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback","true"]'
+
+          # Set OpenAI models via batch
+          BATCH='[{"path":"models.providers.openai.baseUrl","value":"https://api.openai.com/v1"},{"path":"models.providers.openai.models","value":[{"id":"gpt-5.4","name":"GPT-5.4","api":"openai-responses"},{"id":"gpt-5.4-mini","name":"GPT-5.4 Mini","api":"openai-responses"},{"id":"gpt-4o","name":"GPT-4o","api":"openai-responses"}]}]'
+          $SSH "curl -fsS -X POST ${API}/exec \
+            -H 'Content-Type: application/json' \
+            -H '${AUTH}' \
+            -d '{\"cmd\":[\"podman\",\"exec\",\"openclaw\",\"bash\",\"-c\",\"echo '\"'\"'${BATCH}'\"'\"' > /tmp/batch.json && openclaw config set --batch-file /tmp/batch.json\"]}'"
+
+          # Restart to apply config
+          exec_cmd '["podman","restart","openclaw"]'
+          echo "openclaw configured and restarted"
+
+          # Verify openclaw is serving
+          sleep 5
+          result=$($SSH "curl -fsS -X POST ${API}/exec \
+            -H 'Content-Type: application/json' \
+            -H '${AUTH}' \
+            -d '{\"cmd\":[\"podman\",\"exec\",\"openclaw\",\"openclaw\",\"config\",\"get\",\"models.providers\"]}'")
+          echo "Model config: $result"
 
           echo ""
           echo "═══════════════════════════════════════"
