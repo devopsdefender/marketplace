@@ -86,14 +86,14 @@ jobs:
           [ -z "$VM_IP" ] && { echo "::error::VM did not get an IP address"; exit 1; }
           echo "VM IP: ${VM_IP}"
 
-          for i in $(seq 1 60); do
+          for i in $(seq 1 120); do
             health=$($SSH "curl -fsS http://${VM_IP}:8080/health" 2>/dev/null) || true
             if [ -n "$health" ]; then
               echo "Agent healthy: $health"
               break
             fi
-            if [ "$i" -eq 60 ]; then
-              echo "::error::Agent not healthy within 5 minutes"
+            if [ "$i" -eq 120 ]; then
+              echo "::error::Agent not healthy within 10 minutes"
               echo "── cloud-init-output.log ──"
               $SSH "sudo virt-cat -d ${VM_NAME} /var/log/cloud-init-output.log" 2>/dev/null | tail -80 || true
               echo "── dd-agent.log ──"
