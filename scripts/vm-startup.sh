@@ -34,6 +34,32 @@ chmod +x /usr/local/bin/cloudflared
 curl -fsSL -o /usr/local/bin/dd-agent "${DD_AGENT_URL}"
 chmod +x /usr/local/bin/dd-agent
 
+# ── Write openclaw config ────────────────────────────────────────────────
+mkdir -p /var/lib/openclaw
+cat > /var/lib/openclaw/openclaw.json <<'CONF'
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "auth": { "mode": "token", "token": "dd-marketplace" },
+    "controlUi": { "dangerouslyAllowHostHeaderOriginFallback": true }
+  },
+  "models": {
+    "providers": {
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
+        "models": [
+          { "id": "gpt-5.4", "name": "GPT-5.4", "api": "openai-responses" },
+          { "id": "gpt-5.4-mini", "name": "GPT-5.4 Mini", "api": "openai-responses" },
+          { "id": "gpt-4o", "name": "GPT-4o", "api": "openai-responses" }
+        ]
+      }
+    }
+  }
+}
+CONF
+chown -R 1000:1000 /var/lib/openclaw
+
 # ── Start dd-agent with bash shell ───────────────────────────────────────
 DD_OWNER="${DD_OWNER}" \
 DD_ENV="${DD_ENV}" \
@@ -53,6 +79,7 @@ nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
     -d "{
       \"image\": \"${OPENCLAW_IMAGE}\",
       \"app_name\": \"openclaw\",
+      \"volumes\": [\"/var/lib/openclaw:/home/node/.openclaw\"],
       \"env\": [\"OPENAI_API_KEY=${OPENAI_API_KEY}\"]
     }" && echo "openclaw deployed" || echo "openclaw deploy failed"
 ) &
