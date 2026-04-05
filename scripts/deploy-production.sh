@@ -35,7 +35,7 @@ $SSH "cd /tmp && sudo genisoimage -output ${SEED_ISO} -volid cidata -joliet -roc
 
 $SSH "sudo virt-install \
   --name ${VM_NAME} \
-  --ram 65536 \
+  --ram 65024 \
   --vcpus 16 \
   --machine q35 \
   --disk path=${DISK},format=qcow2 \
