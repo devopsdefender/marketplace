@@ -8,7 +8,7 @@ echo "dd-marketplace: starting production setup"
 # ── Install packages ─────────────────────────────────────────────────────
 apt-get update -q
 apt-get install -y podman
-apt-get install -y "linux-modules-extra-$(uname -r)" 2>/dev/null || true
+apt-get install -y "linux-modules-extra-$(uname -r)" "linux-headers-$(uname -r)" 2>/dev/null || true
 modprobe tdx_guest 2>/dev/null || true
 modprobe tsm_report 2>/dev/null || true
 mount -t configfs configfs /sys/kernel/config 2>/dev/null || true
