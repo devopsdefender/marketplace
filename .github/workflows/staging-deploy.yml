@@ -94,6 +94,10 @@ jobs:
             fi
             if [ "$i" -eq 60 ]; then
               echo "::error::Agent not healthy within 5 minutes"
+              echo "── cloud-init-output.log ──"
+              $SSH "sudo virt-cat -d ${VM_NAME} /var/log/cloud-init-output.log" 2>/dev/null | tail -80 || true
+              echo "── dd-agent.log ──"
+              $SSH "sudo virt-cat -d ${VM_NAME} /var/log/dd-agent.log" 2>/dev/null | tail -40 || true
               exit 1
             fi
             echo "  waiting for agent... attempt ${i}/60"
@@ -117,62 +121,60 @@ jobs:
           API="http://${VM_IP}:8080"
           AUTH="Authorization: Bearer ${DD_PASSWORD}"
 
-          # Deploy openclaw container
-          echo "Deploying openclaw..."
-          $SSH "curl -fsS -X POST ${API}/deploy \
+          # Base64-encode the batch JSON for model config
+          BATCH_B64=$(echo '[{"path":"models.providers.openai.baseUrl","value":"https://api.openai.com/v1"},{"path":"models.providers.openai.models","value":[{"id":"gpt-5.4","name":"GPT-5.4","api":"openai-responses"},{"id":"gpt-5.4-mini","name":"GPT-5.4 Mini","api":"openai-responses"},{"id":"gpt-4o","name":"GPT-4o","api":"openai-responses"}]}]' | base64 -w0)
+
+          # Single deploy with post_deploy config commands
+          echo "Deploying and configuring openclaw..."
+          result=$($SSH "curl -fsS -X POST ${API}/deploy \
             -H 'Content-Type: application/json' \
             -H '${AUTH}' \
             -d '{
               \"image\": \"${OPENCLAW_IMAGE}\",
               \"app_name\": \"openclaw\",
-              \"env\": [\"OPENAI_API_KEY=${OPENAI_API_KEY:-}\"]
+              \"env\": [\"OPENAI_API_KEY=${OPENAI_API_KEY:-}\"],
+              \"post_deploy\": [
+                [\"openclaw\", \"config\", \"set\", \"gateway.mode\", \"local\"],
+                [\"openclaw\", \"config\", \"set\", \"gateway.bind\", \"lan\"],
+                [\"openclaw\", \"config\", \"set\", \"gateway.auth.mode\", \"token\"],
+                [\"openclaw\", \"config\", \"set\", \"gateway.auth.token\", \"dd-marketplace\"],
+                [\"openclaw\", \"config\", \"set\", \"gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback\", \"true\"],
+                [\"bash\", \"-c\", \"echo ${BATCH_B64} | base64 -d > /tmp/batch.json && openclaw config set --batch-file /tmp/batch.json\"]
+              ]
             }'"
-          echo "openclaw deploy requested"
+          DEPLOY_ID=$(echo "$result" | jq -r .id)
+          echo "Deploy ID: ${DEPLOY_ID}"
 
-          # Wait for openclaw container to be ready
-          echo "Waiting for openclaw container..."
-          for i in $(seq 1 60); do
-            result=$($SSH "curl -fsS -X POST ${API}/exec \
-              -H 'Content-Type: application/json' \
-              -H '${AUTH}' \
-              -d '{\"cmd\":[\"podman\",\"exec\",\"openclaw\",\"echo\",\"ready\"]}'" 2>/dev/null) || true
-            if echo "$result" | grep -q '"exit_code":0'; then
-              echo "openclaw container ready"
-              break
+          # Tail deployment until running or failed
+          LAST_LOG_COUNT=0
+          for i in $(seq 1 120); do
+            dep=$($SSH "curl -fsS ${API}/deployments/${DEPLOY_ID} -H '${AUTH}'" 2>/dev/null) || true
+            status=$(echo "$dep" | jq -r .status 2>/dev/null) || true
+
+            logs=$($SSH "curl -fsS ${API}/deployments/${DEPLOY_ID}/logs -H '${AUTH}'" 2>/dev/null) || true
+            log_count=$(echo "$logs" | jq -r '.logs | length' 2>/dev/null) || true
+            if [ -n "$log_count" ] && [ "$log_count" -gt "$LAST_LOG_COUNT" ] 2>/dev/null; then
+              echo "$logs" | jq -r ".logs[$LAST_LOG_COUNT:][]" 2>/dev/null || true
+              LAST_LOG_COUNT=$log_count
             fi
-            if [ "$i" -eq 60 ]; then
-              echo "::error::openclaw container not ready within 5 minutes"
+
+            if [ "$status" = "running" ]; then
+              echo "openclaw deployed successfully"
+              break
+            elif [ "$status" = "failed" ]; then
+              error=$(echo "$dep" | jq -r .error_message)
+              echo "::error::Deploy failed: $error"
               exit 1
             fi
-            echo "  waiting... attempt ${i}/60"
+            if [ "$i" -eq 120 ]; then
+              echo "::error::Deploy did not complete within 10 minutes"
+              echo "Last status: $dep"
+              exit 1
+            fi
             sleep 5
           done
 
-          # Configure openclaw
-          echo "Configuring openclaw..."
-          exec_cmd() {
-            $SSH "curl -fsS -X POST ${API}/exec \
-              -H 'Content-Type: application/json' \
-              -H '${AUTH}' \
-              -d '{\"cmd\":$1}'"
-          }
-
-          exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.mode","local"]'
-          exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.bind","lan"]'
-          exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.auth.mode","token"]'
-          exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.auth.token","dd-marketplace"]'
-          exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback","true"]'
-
-          # Set OpenAI models — base64 encode to avoid JSON escaping hell
-          BATCH_B64=$(echo '[{"path":"models.providers.openai.baseUrl","value":"https://api.openai.com/v1"},{"path":"models.providers.openai.models","value":[{"id":"gpt-5.4","name":"GPT-5.4","api":"openai-responses"},{"id":"gpt-5.4-mini","name":"GPT-5.4 Mini","api":"openai-responses"},{"id":"gpt-4o","name":"GPT-4o","api":"openai-responses"}]}]' | base64 -w0)
-          exec_cmd "[\"podman\",\"exec\",\"openclaw\",\"bash\",\"-c\",\"echo ${BATCH_B64} | base64 -d > /tmp/batch.json && openclaw config set --batch-file /tmp/batch.json\"]"
-
-          # Restart to apply config
-          exec_cmd '["podman","restart","openclaw"]'
-          echo "openclaw configured and restarted"
-
-          # Verify openclaw is serving
-          sleep 5
+          # Verify openclaw config
           result=$($SSH "curl -fsS -X POST ${API}/exec \
             -H 'Content-Type: application/json' \
             -H '${AUTH}' \

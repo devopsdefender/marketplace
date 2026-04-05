@@ -94,6 +94,10 @@ jobs:
             fi
             if [ "$i" -eq 60 ]; then
               echo "::error::Agent not healthy within 5 minutes"
+              echo "── cloud-init-output.log ──"
+              $SSH "sudo virt-cat -d ${VM_NAME} /var/log/cloud-init-output.log" 2>/dev/null | tail -80 || true
+              echo "── dd-agent.log ──"
+              $SSH "sudo virt-cat -d ${VM_NAME} /var/log/dd-agent.log" 2>/dev/null | tail -40 || true
               exit 1
             fi
             echo "  waiting for agent... attempt ${i}/60"
