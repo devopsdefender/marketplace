@@ -27,7 +27,8 @@ curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x
 dpkg -i /tmp/cuda-keyring.deb
 apt-get update -q
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nvidia-driver-560 nvidia-container-toolkit
-nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+modprobe nvidia 2>/dev/null || true
+nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml || true
 
 # ── Install binaries ─────────────────────────────────────────────────────
 curl -fsSL -o /usr/local/bin/cloudflared \
