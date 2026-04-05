@@ -163,12 +163,9 @@ jobs:
           exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.auth.token","dd-marketplace"]'
           exec_cmd '["podman","exec","openclaw","openclaw","config","set","gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback","true"]'
 
-          # Set OpenAI models via batch
-          BATCH='[{"path":"models.providers.openai.baseUrl","value":"https://api.openai.com/v1"},{"path":"models.providers.openai.models","value":[{"id":"gpt-5.4","name":"GPT-5.4","api":"openai-responses"},{"id":"gpt-5.4-mini","name":"GPT-5.4 Mini","api":"openai-responses"},{"id":"gpt-4o","name":"GPT-4o","api":"openai-responses"}]}]'
-          $SSH "curl -fsS -X POST ${API}/exec \
-            -H 'Content-Type: application/json' \
-            -H '${AUTH}' \
-            -d '{\"cmd\":[\"podman\",\"exec\",\"openclaw\",\"bash\",\"-c\",\"echo '\"'\"'${BATCH}'\"'\"' > /tmp/batch.json && openclaw config set --batch-file /tmp/batch.json\"]}'"
+          # Set OpenAI models — base64 encode to avoid JSON escaping hell
+          BATCH_B64=$(echo '[{"path":"models.providers.openai.baseUrl","value":"https://api.openai.com/v1"},{"path":"models.providers.openai.models","value":[{"id":"gpt-5.4","name":"GPT-5.4","api":"openai-responses"},{"id":"gpt-5.4-mini","name":"GPT-5.4 Mini","api":"openai-responses"},{"id":"gpt-4o","name":"GPT-4o","api":"openai-responses"}]}]' | base64 -w0)
+          exec_cmd "[\"podman\",\"exec\",\"openclaw\",\"bash\",\"-c\",\"echo ${BATCH_B64} | base64 -d > /tmp/batch.json && openclaw config set --batch-file /tmp/batch.json\"]"
 
           # Restart to apply config
           exec_cmd '["podman","restart","openclaw"]'
