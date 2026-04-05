@@ -126,22 +126,20 @@ jobs:
 
           # Single deploy with post_deploy config commands
           echo "Deploying and configuring openclaw..."
-          result=$($SSH "curl -fsS -X POST ${API}/deploy \
-            -H 'Content-Type: application/json' \
-            -H '${AUTH}' \
-            -d '{
-              \"image\": \"${OPENCLAW_IMAGE}\",
-              \"app_name\": \"openclaw\",
-              \"env\": [\"OPENAI_API_KEY=${OPENAI_API_KEY:-}\"],
-              \"post_deploy\": [
-                [\"openclaw\", \"config\", \"set\", \"gateway.mode\", \"local\"],
-                [\"openclaw\", \"config\", \"set\", \"gateway.bind\", \"lan\"],
-                [\"openclaw\", \"config\", \"set\", \"gateway.auth.mode\", \"token\"],
-                [\"openclaw\", \"config\", \"set\", \"gateway.auth.token\", \"dd-marketplace\"],
-                [\"openclaw\", \"config\", \"set\", \"gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback\", \"true\"],
-                [\"bash\", \"-c\", \"echo ${BATCH_B64} | base64 -d > /tmp/batch.json && openclaw config set --batch-file /tmp/batch.json\"]
-              ]
-            }'"
+          DEPLOY_JSON="{
+            \"image\": \"${OPENCLAW_IMAGE}\",
+            \"app_name\": \"openclaw\",
+            \"env\": [\"OPENAI_API_KEY=${OPENAI_API_KEY:-}\"],
+            \"post_deploy\": [
+              [\"openclaw\", \"config\", \"set\", \"gateway.mode\", \"local\"],
+              [\"openclaw\", \"config\", \"set\", \"gateway.bind\", \"lan\"],
+              [\"openclaw\", \"config\", \"set\", \"gateway.auth.mode\", \"token\"],
+              [\"openclaw\", \"config\", \"set\", \"gateway.auth.token\", \"dd-marketplace\"],
+              [\"openclaw\", \"config\", \"set\", \"gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback\", \"true\"],
+              [\"bash\", \"-c\", \"echo ${BATCH_B64} | base64 -d > /tmp/batch.json && openclaw config set --batch-file /tmp/batch.json\"]
+            ]
+          }"
+          result=$($SSH "curl -fsS -X POST ${API}/deploy -H 'Content-Type: application/json' -H '${AUTH}' -d '${DEPLOY_JSON}'")
           DEPLOY_ID=$(echo "$result" | jq -r .id)
           echo "Deploy ID: ${DEPLOY_ID}"
 
