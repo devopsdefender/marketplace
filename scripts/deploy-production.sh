@@ -33,15 +33,14 @@ SEED_ISO="/var/lib/libvirt/images/${VM_NAME}-seed.iso"
 $SCP /tmp/user-data /tmp/meta-data "${SSH_USER}@${SSH_HOST}:/tmp/"
 $SSH "cd /tmp && sudo genisoimage -output ${SEED_ISO} -volid cidata -joliet -rock user-data meta-data"
 
-# Allocate 2MB hugepages for VFIO DMA mapping limit (64GB / 2MB = 32768 pages)
-$SSH "echo 32768 | sudo tee /proc/sys/vm/nr_hugepages"
+# Raise VFIO DMA entry limit for 64GB VM + GPU passthrough (default 262144 is ~1GB)
+$SSH "echo 16777216 | sudo tee /sys/module/vfio_iommu_type1/parameters/dma_entry_limit"
 
 $SSH "sudo virt-install \
   --name ${VM_NAME} \
   --ram 65536 \
   --vcpus 16 \
   --machine q35 \
-  --memorybacking hugepages=yes \
   --disk path=${DISK},format=qcow2 \
   --disk path=${SEED_ISO},device=cdrom \
   --os-variant ubuntu24.04 \
