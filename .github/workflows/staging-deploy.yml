@@ -58,6 +58,7 @@ jobs:
       - name: Create VM
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DD_PASSWORD: ${{ secrets.DD_PASSWORD }}
           DD_AGENT_URL: ${{ steps.dd.outputs.binary_url }}
         run: scripts/deploy-staging.sh
 

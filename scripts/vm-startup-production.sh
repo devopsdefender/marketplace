@@ -30,6 +30,7 @@ chmod +x /usr/local/bin/dd-agent
 DD_OWNER="${DD_OWNER}" \
 DD_ENV="${DD_ENV}" \
 DD_REGISTER_URL="${DD_REGISTER_URL}" \
+DD_PASSWORD="${DD_PASSWORD}" \
 DD_BOOT_CMD=bash \
 DD_BOOT_APP=shell \
 nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
