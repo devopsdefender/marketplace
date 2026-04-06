@@ -43,7 +43,7 @@ $SSH "sudo virt-install \
   --os-variant ubuntu24.04 \
   --network bridge=virbr0 \
   --graphics none \
-  --boot firmware=efi \
+  --boot firmware=efi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no \
   --launchSecurity type=tdx \
   --host-device 0d:00.0 \
   --import \

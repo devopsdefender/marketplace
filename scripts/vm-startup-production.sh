@@ -98,7 +98,7 @@ nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
   # Set ollama (primary) + OpenAI (fallback) models
   podman exec openclaw bash -c 'cat > /tmp/batch.json <<BEOF
 [
-  {"path": "models.providers.ollama.baseUrl", "value": "http://localhost:11434/v1"},
+  {"path": "models.providers.ollama.baseUrl", "value": "http://localhost:11434"},
   {"path": "models.providers.ollama.models", "value": [
     {"id": "'"${OLLAMA_MODEL}"'", "name": "'"${OLLAMA_MODEL}"' (local GPU)", "api": "ollama"}
   ]},
