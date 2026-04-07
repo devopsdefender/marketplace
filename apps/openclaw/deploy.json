@@ -8,9 +8,9 @@
     "ollama-data:/root/.ollama"
   ],
   "post_deploy": [
-    ["sh", "-c", "apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"],
+    ["sh", "-c", "apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg git && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"],
     ["sh", "-c", "ollama pull gemma4:e2b"],
-    ["sh", "-c", "ollama launch openclaw --config -y --model gemma4:e2b"],
-    ["sh", "-c", "nohup openclaw gateway --force > /var/log/openclaw.log 2>&1 & echo started"]
+    ["sh", "-c", "ollama launch openclaw --config -y --model gemma4:e2b || true"],
+    ["sh", "-c", "setsid nohup openclaw gateway > /var/log/openclaw.log 2>&1 < /dev/null & sleep 5 && curl -fsS http://127.0.0.1:18789/__openclaw__/canvas/ > /dev/null && echo openclaw gateway up"]
   ]
 }
