@@ -10,8 +10,9 @@
 #   DD_AGENT_URL        — dd-agent binary download URL
 #   DD_ENV              — staging or production
 #   DD_DOMAIN           — Domain (e.g. devopsdefender.com)
-#   OPENCLAW_IMAGE      — Container image for openclaw
-#   OPENROUTER_API_KEY  — OpenClaw LLM API key
+#
+# Optional:
+#   OLLAMA_MODEL        — Gemma model tag (default: gemma4)
 #
 # Optional env vars:
 #   VM_RAM              — RAM in MB (default: 8192)
@@ -54,7 +55,7 @@ write_files:
 $(sed 's/^/      /' "${SCRIPT_DIR}/vm-startup.sh")
 
 runcmd:
-  - DD_AGENT_URL=${DD_AGENT_URL} DD_OWNER=devopsdefender DD_ENV=${DD_ENV} DD_REGISTER_URL=wss://${REGISTER_HOST}/register OPENCLAW_IMAGE=${OPENCLAW_IMAGE} OPENAI_API_KEY=${OPENAI_API_KEY:-} /opt/dd/startup.sh
+  - DD_AGENT_URL=${DD_AGENT_URL} DD_OWNER=devopsdefender DD_ENV=${DD_ENV} DD_REGISTER_URL=wss://${REGISTER_HOST}/register OLLAMA_MODEL=${OLLAMA_MODEL:-gemma4} /opt/dd/startup.sh
 USERDATA
 
 cat > /tmp/meta-data <<METADATA
