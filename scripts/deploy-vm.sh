@@ -11,9 +11,6 @@
 #   DD_ENV              — staging or production
 #   DD_DOMAIN           — Domain (e.g. devopsdefender.com)
 #
-# Optional:
-#   OLLAMA_MODEL        — Gemma model tag (default: gemma4)
-#
 # Optional env vars:
 #   VM_RAM              — RAM in MB (default: 8192)
 #   VM_VCPUS            — vCPU count (default: 4)
@@ -42,9 +39,11 @@ DISK="/var/lib/libvirt/images/${VM_NAME}.qcow2"
 $SSH "sudo qemu-img create -f qcow2 -b ${BASE_IMAGE} -F qcow2 ${DISK} ${VM_DISK}G"
 
 # ── Generate cloud-init ──────────────────────────────────────────────────
-# The startup script is fetched from the repo and run with env vars.
-# We write it inline here since the VM can't reach the repo at boot.
+# The startup script and openclaw deploy spec are fetched from the repo and
+# written into the VM. We embed both inline since the VM can't reach the
+# repo at boot.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cat > /tmp/user-data <<USERDATA
 #cloud-config
@@ -53,9 +52,13 @@ write_files:
     permissions: '0755'
     content: |
 $(sed 's/^/      /' "${SCRIPT_DIR}/vm-startup.sh")
+  - path: /opt/dd/openclaw-deploy.json
+    permissions: '0644'
+    content: |
+$(sed 's/^/      /' "${REPO_DIR}/apps/openclaw/deploy.json")
 
 runcmd:
-  - DD_AGENT_URL=${DD_AGENT_URL} DD_OWNER=devopsdefender DD_ENV=${DD_ENV} DD_REGISTER_URL=wss://${REGISTER_HOST}/register OLLAMA_MODEL=${OLLAMA_MODEL:-gemma4} /opt/dd/startup.sh
+  - DD_AGENT_URL=${DD_AGENT_URL} DD_OWNER=devopsdefender DD_ENV=${DD_ENV} DD_REGISTER_URL=wss://${REGISTER_HOST}/register /opt/dd/startup.sh
 USERDATA
 
 cat > /tmp/meta-data <<METADATA

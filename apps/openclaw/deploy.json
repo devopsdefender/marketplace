@@ -1,0 +1,16 @@
+{
+  "image": "docker.io/ollama/ollama@sha256:87d71eb588a28c747094ca5d011392a3790f6ea9bd9c87594780ad7c65cc7ed1",
+  "app_name": "openclaw",
+  "env": [
+    "OLLAMA_HOST=0.0.0.0:11434"
+  ],
+  "volumes": [
+    "ollama-data:/root/.ollama"
+  ],
+  "post_deploy": [
+    ["sh", "-c", "apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"],
+    ["sh", "-c", "ollama pull gemma4:e2b"],
+    ["sh", "-c", "ollama launch openclaw --config -y --model gemma4:e2b"],
+    ["sh", "-c", "nohup openclaw gateway --force > /var/log/openclaw.log 2>&1 & echo started"]
+  ]
+}

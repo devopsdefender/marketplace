@@ -1,27 +1,35 @@
 #!/bin/bash
 # vm-startup.sh — Runs inside the marketplace VM at boot via cloud-init.
-# Installs dd-agent + ollama, then `ollama launch openclaw --model gemma4`.
+# Installs podman + dd-agent, then POSTs the openclaw workload to dd-agent's
+# local /deploy endpoint.
+#
+# The openclaw workload itself runs inside the vanilla ollama container
+# image (see /opt/dd/openclaw-deploy.json). dd-agent's /deploy endpoint
+# pulls the image, starts the container with --network host, then exec's
+# the post_deploy commands inside it (apt install nodejs, ollama pull
+# gemma4:e2b, ollama launch openclaw --config -y, openclaw gateway).
 #
 # Required env vars:
 #   DD_AGENT_URL        — URL to download dd-agent binary
 #   DD_OWNER            — Owner label
 #   DD_ENV              — Environment (staging/production)
 #   DD_REGISTER_URL     — Fleet registration WebSocket URL
-#
-# Optional:
-#   OLLAMA_MODEL        — Ollama model (default: gemma4)
 set -euo pipefail
-
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4}"
 
 echo "dd-marketplace: starting VM setup"
 
-# ── TDX attestation modules (optional) ──────────────────────────────────
+# ── Install packages ─────────────────────────────────────────────────────
 apt-get update -q
+apt-get install -y podman
+
+# TDX attestation modules (optional)
 apt-get install -y "linux-modules-extra-$(uname -r)" 2>/dev/null || true
 modprobe tdx_guest 2>/dev/null || true
 modprobe tsm_report 2>/dev/null || true
 mount -t configfs configfs /sys/kernel/config 2>/dev/null || true
+
+# Enable podman socket for bollard (used by dd-agent's container::pull_and_run)
+systemctl enable --now podman.socket
 
 # ── Install binaries ─────────────────────────────────────────────────────
 curl -fsSL -o /usr/local/bin/cloudflared \
@@ -31,9 +39,6 @@ chmod +x /usr/local/bin/cloudflared
 curl -fsSL -o /usr/local/bin/dd-agent "${DD_AGENT_URL}"
 chmod +x /usr/local/bin/dd-agent
 
-# Install ollama
-curl -fsSL https://ollama.com/install.sh | sh
-
 # ── Start dd-agent with bash shell ───────────────────────────────────────
 DD_OWNER="${DD_OWNER}" \
 DD_ENV="${DD_ENV}" \
@@ -42,18 +47,21 @@ DD_BOOT_CMD=bash \
 DD_BOOT_APP=shell \
 nohup /usr/local/bin/dd-agent > /var/log/dd-agent.log 2>&1 &
 
-# ── Launch openclaw on top of ollama gemma4 ─────────────────────────────
+# ── Deploy openclaw via dd-agent /deploy ─────────────────────────────────
+# Same /deploy endpoint any caller would hit; running it from cloud-init
+# is just a convenience for first-boot. The payload is checked into
+# apps/openclaw/deploy.json and dropped into the VM by deploy-vm.sh.
 (
-  # Wait for ollama service to be listening
   for i in $(seq 1 30); do
-    curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1 && break
+    curl -fsS http://localhost:8080/health >/dev/null 2>&1 && break
     sleep 2
   done
 
-  # ollama pulls the model and launches openclaw wired to it
-  nohup ollama launch openclaw --model "${OLLAMA_MODEL}" \
-    > /var/log/openclaw.log 2>&1 &
-  echo "ollama launch openclaw --model ${OLLAMA_MODEL} started"
+  curl -fsS -X POST http://localhost:8080/deploy \
+    -H "Content-Type: application/json" \
+    --data @/opt/dd/openclaw-deploy.json \
+    && echo "openclaw deploy submitted" \
+    || echo "openclaw deploy submission failed"
 ) &
 
 echo "dd-marketplace: setup complete"
