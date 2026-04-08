@@ -33,7 +33,7 @@ the running container is bounded by a known-pristine ollama image.
 
 | Environment | Model | GPU | VM Sizing |
 |-------------|-------|-----|-----------|
-| **Staging** | gemma4:e2b (CPU) | None | 24GB / 8 vCPU / 80GB |
+| **Staging** | gemma4:e2b (CPU) | None | 24GB / 16 vCPU / 80GB |
 | **Production** | gemma4:e2b (CPU) | None | 32GB / 16 vCPU / 120GB |
 
 CPU inference of gemma4:e2b runs ~5–15 tok/s on modern x86 with AVX2.
