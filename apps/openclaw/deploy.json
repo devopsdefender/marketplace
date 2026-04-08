@@ -12,6 +12,6 @@
     ["sh", "-c", "ollama pull gemma4:e2b"],
     ["sh", "-c", "npm install -g openclaw@latest && command -v openclaw && openclaw --version 2>&1 | tail -1"],
     ["sh", "-c", "mkdir -p /root/.openclaw && printf %s '{\"gateway\":{\"mode\":\"local\",\"auth\":{\"mode\":\"none\"}},\"models\":{\"providers\":{\"ollama\":{\"baseUrl\":\"http://localhost:11434/v1\",\"models\":[{\"id\":\"gemma4:e2b\",\"name\":\"gemma4:e2b\",\"api\":\"ollama\"}]}}}}' > /root/.openclaw/openclaw.json && openclaw config validate"],
-    ["sh", "-c", "setsid nohup openclaw gateway > /var/log/openclaw.log 2>&1 < /dev/null & sleep 6 && code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:18789/__openclaw__/canvas/) && [ \"$code\" != \"000\" ] && echo \"openclaw gateway up (HTTP $code)\""]
+    ["sh", "-c", "setsid nohup openclaw gateway > /var/log/openclaw.log 2>&1 < /dev/null & for i in $(seq 1 30); do code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:18789/__openclaw__/canvas/ 2>/dev/null || echo 000); [ \"$code\" != \"000\" ] && { echo \"openclaw gateway up (HTTP $code) after ${i}s\"; exit 0; }; sleep 1; done; echo 'gateway did not bind 18789 within 30s'; echo '--- /var/log/openclaw.log ---'; cat /var/log/openclaw.log 2>&1 | tail -60; echo '--- ps ---'; ps -ef 2>&1 | grep -E 'openclaw|node' | grep -v grep | head -10; exit 1"]
   ]
 }
