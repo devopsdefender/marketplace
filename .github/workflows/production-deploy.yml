@@ -20,7 +20,9 @@ env:
   SSH_USER: tdx2
   BASE_IMAGE: /var/lib/libvirt/images/ubuntu-24.04-cloudimg-amd64.img
   BASE_IMAGE_URL: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
-  OPENCLAW_IMAGE: ghcr.io/openclaw/openclaw:latest
+  VM_RAM: "196608"
+  VM_VCPUS: "32"
+  VM_DISK: "120"
 
 jobs:
   deploy:
@@ -57,7 +59,6 @@ jobs:
 
       - name: Create VM
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DD_AGENT_URL: ${{ steps.dd.outputs.binary_url }}
         run: scripts/deploy-vm.sh
 
