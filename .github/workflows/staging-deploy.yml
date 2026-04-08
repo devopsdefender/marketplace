@@ -20,7 +20,7 @@ env:
   SSH_USER: tdx2
   BASE_IMAGE: /var/lib/libvirt/images/ubuntu-24.04-cloudimg-amd64.img
   BASE_IMAGE_URL: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
-  VM_RAM: "16384"
+  VM_RAM: "24576"
   VM_VCPUS: "8"
 
 jobs:
