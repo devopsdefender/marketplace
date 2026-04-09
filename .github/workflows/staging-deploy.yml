@@ -54,7 +54,15 @@ jobs:
       - name: Destroy old VM
         run: |
           SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
-          $SSH "sudo virsh destroy ${VM_NAME} 2>/dev/null; sudo virsh undefine ${VM_NAME} --remove-all-storage 2>/dev/null" || true
+          # Robust cleanup: nvidia-nvlink bug can prevent SIGKILL from
+          # terminating QEMU, leaving the VM defined with disk claimed.
+          $SSH "sudo virsh destroy ${VM_NAME} 2>/dev/null || true
+            for i in \$(seq 1 10); do
+              sudo virsh domstate ${VM_NAME} 2>/dev/null | grep -q 'shut off' && break
+              sleep 1
+            done
+            sudo virsh undefine ${VM_NAME} --remove-all-storage --nvram 2>/dev/null || true
+            sudo rm -f /var/lib/libvirt/images/${VM_NAME}.qcow2 /var/lib/libvirt/images/${VM_NAME}-seed.iso" || true
 
       - name: Create VM
         env:
