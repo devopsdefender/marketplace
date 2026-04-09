@@ -61,44 +61,12 @@ jobs:
           DD_AGENT_URL: ${{ steps.dd.outputs.binary_url }}
         run: scripts/deploy-vm.sh
 
-      - name: Verify marketplace is live
-        run: |
-          set -euo pipefail
-          SSH="ssh -i /tmp/deploy-key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}"
-
-          $SSH "sudo virsh dominfo ${VM_NAME}" || {
-            echo "::error::VM ${VM_NAME} is not running"
-            exit 1
-          }
-
-          VM_MAC=$($SSH "sudo virsh domiflist ${VM_NAME} | awk '/virbr0/ {print \$5}'")
-          for i in $(seq 1 24); do
-            VM_IP=$($SSH "sudo virsh net-dhcp-leases default | grep '$VM_MAC' | awk '{print \$5}' | cut -d/ -f1")
-            [ -n "$VM_IP" ] && break
-            echo "  waiting for VM IP... attempt ${i}/24"
-            sleep 5
-          done
-          [ -z "$VM_IP" ] && { echo "::error::VM did not get an IP address"; exit 1; }
-          echo "VM IP: ${VM_IP}"
-
-          for i in $(seq 1 60); do
-            health=$($SSH "curl -fsS http://${VM_IP}:8080/health" 2>/dev/null) || true
-            if [ -n "$health" ]; then
-              echo "Agent healthy: $health"
-              break
-            fi
-            if [ "$i" -eq 60 ]; then
-              echo "::error::Agent not healthy within 5 minutes"
-              exit 1
-            fi
-            echo "  waiting for agent... attempt ${i}/60"
-            sleep 5
-          done
-
-          echo ""
-          echo "═══════════════════════════════════════"
-          echo "  Marketplace staging deployed"
-          echo "═══════════════════════════════════════"
+      - name: Verify openclaw deployment
+        uses: ./.github/actions/verify-deployment
+        with:
+          vm-name: ${{ env.VM_NAME }}
+          deployment: openclaw
+          timeout: 420
 
       - name: Cleanup SSH key
         if: always()
